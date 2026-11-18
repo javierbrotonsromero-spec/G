@@ -63,7 +63,7 @@ class Machine:
             return [(0.0, 0.0)]
         return [(offset * math.cos(a), offset * math.sin(a)) for a in self.piece_angles]
 
-    def world(self, offset, with_holes=True):
+    def world(self, offset, with_holes=True, wires=True):
         m = self.cfg["machine"]
         parts = [C.Floor(0.0)]
         ped = m["pedestal"]
@@ -71,8 +71,9 @@ class Machine:
                                 self.holes_xy(offset) if with_holes else [],
                                 ped["hole_radius"], ped["sink_radius"], ped["sink_depth"]))
         for gi, g in enumerate(m["gates"]):
-            parts.append(C.Ring(g["radius"] + self.wire_offset(g), g["wire"],
-                                g["height"] - self.wire_drop(g)))
+            if wires:
+                parts.append(C.Ring(g["radius"] + self.wire_offset(g), g["wire"],
+                                    g["height"] - self.wire_drop(g)))
             hs = math.radians(g["span"]) / 2
             for a in self.piece_angles:
                 parts.append(C.Sleeve(g["radius"], g["sleeve"], g["height"], hs,
@@ -126,7 +127,9 @@ class Machine:
         intensity = self.cfg["effects"]["deform_intensity"]
         sub = int(tm["substeps"])
         dt = self.speed / self.fps / sub
-        world = self.world(offset)
+        # the choreographed path clears the thin gold wires; leaving them out
+        # of the soft-skin collisions stops jelly from draping over them
+        world = self.world(offset, wires=False)
         steps = range(len(self.steps)) if steps is None else steps
         nf = self.frames_per_step if frames_limit is None else frames_limit
         verts, tris = make_piece(self.cfg["machine"]["piece_shape"],

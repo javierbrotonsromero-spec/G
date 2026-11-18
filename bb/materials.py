@@ -106,9 +106,6 @@ class G:
         return p
 
 
-TIME_NODES = []  # value nodes that receive the current time each frame
-
-
 def _group(name, builder, detail):
     ng = bpy.data.node_groups.new(f"BB_{name}", "ShaderNodeTree")
     ng.interface.new_socket("Vector", in_out="INPUT", socket_type="NodeSocketVector")
@@ -136,18 +133,10 @@ def get_group(name, detail=1.0, owner=""):
 
 
 def _time(g):
-    v = g.n("ShaderNodeValue")
-    v.outputs[0].default_value = 0.0
-    TIME_NODES.append(v)
-    return v.outputs[0]
-
-
-def set_time(t):
-    for v in TIME_NODES:
-        try:
-            v.outputs[0].default_value = t
-        except ReferenceError:
-            pass
+    """Animated time for liquids: read from the object's 'bb_time' property
+    (object attributes don't trigger shader recompiles between frames)."""
+    a = g.n("ShaderNodeAttribute", attribute_type="OBJECT", attribute_name="bb_time")
+    return a.outputs["Fac"]
 
 
 # ---------------------------------------------------------------- metals
@@ -415,60 +404,62 @@ def static_material(name, lib_name, detail=1.0, coord="Object"):
     return mat
 
 
-class MorphMaterial:
-    """Material A -> B transition driven by an animated mask on the piece's
-    rest-pose coordinates (so the pattern sticks to the deforming surface)."""
+class MorphLibrary:
+    """One pre-built material per transition A -> B. The transition progress
+    is read from the object property 'bb_morph', so nothing in any material
+    is edited while rendering (safe with Cycles persistent data)."""
 
-    def __init__(self, name, size, detail=1.0):
+    def __init__(self, size, detail=1.0):
         self.size = size
         self.detail = detail
+        self.cache = {}
+
+    def get(self, mat_a, mat_b, mode="spread"):
+        if mat_a == mat_b:
+            mat_a, mode = mat_b, "fade"
+        key = (mat_a, mat_b, mode)
+        if key not in self.cache:
+            self.cache[key] = self._build(*key)
+        return self.cache[key]
+
+    def _build(self, mat_a, mat_b, mode):
+        name = f"Piece {mat_a}>{mat_b}" if mat_a != mat_b else f"Piece {mat_b}"
         mat = bpy.data.materials.new(name)
         mat.use_nodes = True
         nt = mat.node_tree
         nt.nodes.clear()
         g = G(nt)
-        attr = g.n("ShaderNodeAttribute", attribute_name="rest")
-        self.ga = g.n("ShaderNodeGroup")
-        self.gb = g.n("ShaderNodeGroup")
-        self.ga.node_tree = get_group("gold", detail, owner="morphA")
-        self.gb.node_tree = get_group("gold", detail, owner="morphB")
-        g.link(attr.outputs["Vector"], self.ga.inputs["Vector"])
-        g.link(attr.outputs["Vector"], self.gb.inputs["Vector"])
-        # mask: height in the piece + organic noise edge
-        sep = g.n("ShaderNodeSeparateXYZ")
-        g.link(attr.outputs["Vector"], sep.inputs["Vector"])
-        h = g.math("MULTIPLY_ADD", sep.outputs["Z"], 0.5 / size, 0.5)
-        nz = g.noise(attr.outputs["Vector"], 2.2 / size, 3.0, 0.55)
-        hm = g.math("MULTIPLY_ADD", nz.outputs["Fac"], 0.45, h)
-        self.mr = g.n("ShaderNodeMapRange", interpolation_type="SMOOTHSTEP")
-        g.link(hm, self.mr.inputs["Value"])
-        self.mix = g.n("ShaderNodeMixShader")
-        g.link(self.mr.outputs["Result"], self.mix.inputs["Fac"])
-        g.link(self.ga.outputs["Shader"], self.mix.inputs[1])
-        g.link(self.gb.outputs["Shader"], self.mix.inputs[2])
+        rest = g.n("ShaderNodeAttribute", attribute_name="rest")
         out = g.n("ShaderNodeOutputMaterial")
-        g.link(self.mix.outputs["Shader"], out.inputs["Surface"])
-        self.mat = mat
-        self.state = None
-
-    def set(self, mat_a, mat_b, progress, mode="spread"):
-        """progress 0 -> all A, 1 -> all B."""
-        if self.state != (mat_a, mat_b):
-            self.ga.node_tree = get_group(mat_a, self.detail, owner="morphA")
-            self.gb.node_tree = get_group(mat_b, self.detail, owner="morphB")
-            self.state = (mat_a, mat_b)
-        vals = self._values(progress, mode, mat_a == mat_b)
-        if vals == getattr(self, "_last", None):
-            return  # nothing changed: don't trigger a shader update
-        self._last = vals
-        mr = self.mr.inputs
-        for k, v in zip(("From Min", "From Max", "To Min", "To Max"), vals):
-            mr[k].default_value = v
-
-    def _values(self, progress, mode, same):
-        if mode == "fade" or same:
-            # constant factor everywhere
-            return (-10.0, -9.0, round(progress, 4), round(progress, 4))
-        w = 0.06
-        edge = -0.35 + progress * 1.95  # sweeps bottom -> top, past the noise range
-        return (round(edge + w, 4), round(edge - w, 4), 0.0, 1.0)
+        gb = g.n("ShaderNodeGroup")
+        gb.node_tree = get_group(mat_b, self.detail, owner=name + "B")
+        g.link(rest.outputs["Vector"], gb.inputs["Vector"])
+        if mat_a == mat_b:
+            g.link(gb.outputs["Shader"], out.inputs["Surface"])
+            return mat
+        ga = g.n("ShaderNodeGroup")
+        ga.node_tree = get_group(mat_a, self.detail, owner=name + "A")
+        g.link(rest.outputs["Vector"], ga.inputs["Vector"])
+        prog = g.n("ShaderNodeAttribute", attribute_type="OBJECT", attribute_name="bb_morph").outputs["Fac"]
+        if mode == "fade":
+            fac = prog
+        else:
+            # organic front sweeping bottom -> top, stuck to the surface
+            sep = g.n("ShaderNodeSeparateXYZ")
+            g.link(rest.outputs["Vector"], sep.inputs["Vector"])
+            h = g.math("MULTIPLY_ADD", sep.outputs["Z"], 0.5 / self.size, 0.5)
+            nz = g.noise(rest.outputs["Vector"], 2.2 / self.size, 3.0, 0.55)
+            hm = g.math("MULTIPLY_ADD", nz.outputs["Fac"], 0.45, h)
+            edge = g.math("MULTIPLY_ADD", prog, 1.95, -0.35)
+            w = 0.06
+            mr = g.n("ShaderNodeMapRange", interpolation_type="SMOOTHSTEP")
+            g.link(hm, mr.inputs["Value"])
+            g.link(g.math("ADD", edge, w), mr.inputs["From Min"])
+            g.link(g.math("SUBTRACT", edge, w), mr.inputs["From Max"])
+            fac = mr.outputs["Result"]
+        mix = g.n("ShaderNodeMixShader")
+        g.link(fac, mix.inputs["Fac"])
+        g.link(ga.outputs["Shader"], mix.inputs[1])
+        g.link(gb.outputs["Shader"], mix.inputs[2])
+        g.link(mix.outputs["Shader"], out.inputs["Surface"])
+        return mat

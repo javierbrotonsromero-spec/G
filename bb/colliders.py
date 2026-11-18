@@ -128,6 +128,16 @@ class SceneSDF:
         for k in range(3):
             o = np.zeros(3)
             o[k] = eps
-            g[:, k] = self.sdf(P + o, t) - self.sdf(P - o, t)
+            fp = self.sdf(P + o, t)
+            fm = self.sdf(P - o, t)
+            gk = (fp - fm) * 0.5
+            # one-sided differences across discontinuities (e.g. the open end
+            # of a sleeve) so the normal never points along a jump
+            jp = np.abs(fp - d) > 0.05
+            jm = np.abs(fm - d) > 0.05
+            gk = np.where(jp & ~jm, d - fm, gk)
+            gk = np.where(jm & ~jp, fp - d, gk)
+            gk = np.where(jm & jp, 0.0, gk)
+            g[:, k] = gk
         n = np.linalg.norm(g, axis=1, keepdims=True)
         return d, g / np.maximum(n, 1e-9)

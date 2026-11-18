@@ -47,6 +47,8 @@ class SoftBody:
         self.alive = True
         self.target = None   # path centre the body is tethered to (or None)
         self.tether = 0.08   # tether strength per substep
+        self.radius = float(np.linalg.norm(self.q, axis=1).max())
+        self.max_stretch = 1.75
 
     # ------------------------------------------------------------------
     def volume(self, x):
@@ -157,6 +159,17 @@ class SoftBody:
             self._shape_match(x, w)
         if last and self.target is not None:
             x += self.tether * (self.target - x.mean(0))
+        if not rigid:
+            # long-range stretch limit: no part of the piece may drift further
+            # than max_stretch radii from its centre (Jacobi edge constraints
+            # alone are too weak for that)
+            c = x.mean(0)
+            r = x - c
+            L = np.linalg.norm(r, axis=1)
+            lim = self.max_stretch * self.radius
+            over = L > lim
+            if over.any():
+                x[over] = c + r[over] * (lim / L[over])[:, None]
         if last and not rigid:
             c = self._collide(x, self.xprev, world, t)
             if c is not None:

@@ -90,7 +90,7 @@ class Scene:
         s.cycles.caustics_refractive = False
         s.cycles.blur_glossy = 1.0
         s.cycles.sample_clamp_indirect = 8.0
-        s.render.use_persistent_data = True
+        s.render.use_persistent_data = bool(r.get("persistent_data", False))
         s.render.film_transparent = False
         s.render.filter_size = 1.2
         s.render.image_settings.file_format = "PNG"
@@ -339,11 +339,21 @@ class Scene:
         m = self.cfg["machine"]
         from .meshgen import make_piece
         verts, tris = make_piece(m["piece_shape"], m["piece_size"], m["piece_detail"])
-        self.morph = M.MorphMaterial("Piece", m["piece_size"], self.cfg["effects"]["texture_detail"])
+        self.morph = M.MorphLibrary(m["piece_size"], self.cfg["effects"]["texture_detail"])
+        # build every material the video needs up front
+        steps = self.cfg["progression"]["steps"]
+        mode = self.cfg["progression"]["morph"].get("mode", "spread")
+        for i, st in enumerate(steps):
+            prev = steps[i - 1]["material"] if i else st["material"]
+            self.morph.get(prev, st["material"], "fade" if mode == "cut" else mode)
+            self.morph.get(st["material"], st["material"])
+        first = self.morph.get(steps[0]["material"], steps[0]["material"])
         self.pieces = []
         rest = (verts - verts.mean(0)).astype(np.float32)
         for i in range(self.mc.n):
-            ob = mesh_object(f"Piece{i}", verts, tris, self.morph.mat)
+            ob = mesh_object(f"Piece{i}", verts, tris, first)
+            ob["bb_morph"] = 0.0
+            ob["bb_time"] = 0.0
             attr = ob.data.attributes.new("rest", "FLOAT_VECTOR", "POINT")
             attr.data.foreach_set("vector", rest.ravel())
             lv = int(self.cfg["render"]["piece_subdivision"])
@@ -368,6 +378,11 @@ class Scene:
             ob.location = (0.0, 0.0, 0.0)
             ob.data.vertices.foreach_set("co", x.ravel())
             ob.data.update()
-        self.morph.set(*material_state)
-        M.set_time(time_s)
+        a, b, prog, mode = material_state
+        mat = self.morph.get(a, b, mode)
+        for ob in self.pieces:
+            if ob.data.materials[0] != mat:
+                ob.data.materials[0] = mat
+            ob["bb_morph"] = float(prog)
+            ob["bb_time"] = float(time_s)
         self.scene.frame_current = f
