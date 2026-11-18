@@ -36,6 +36,9 @@ class Machine:
         if hole_offset is None:
             hole_offset = ped["hole_offset"]
         self.hole_offset = None if hole_offset == "auto" else float(hole_offset)
+        self.layout = m.get("layout", "rings")
+        if self.layout == "rings":
+            self.hole_offset = float(m["ring_offset"])  # a hole under every ring
 
     # ------------------------------------------------------------ timeline
     def gate_angle(self, gi, t):
@@ -63,13 +66,37 @@ class Machine:
             return [(0.0, 0.0)]
         return [(offset * math.cos(a), offset * math.sin(a)) for a in self.piece_angles]
 
-    def world(self, offset, with_holes=True, wires=True):
+    # ------------------------------------------------------------ rings layout
+    def ring_xy(self, i):
+        a = self.piece_angles[i]
+        d = self.cfg["machine"]["ring_offset"]
+        return np.array([d * math.cos(a), d * math.sin(a)])
+
+    def ring_z(self, row, i, t):
+        """Floating height of ring `row` above piece i at machine time t."""
+        rg = self.cfg["machine"]["rings"][row]
+        ph = 1.7 * i + 0.9 * row
+        return rg["height"] + rg.get("bob", 0.0) * math.sin(2 * math.pi * t / rg.get("period", 2.6) + ph)
+
+    def ring_major(self, rg):
+        return rg["inner"] + rg["tube"]
+
+    def world(self, offset, with_holes=True, wires=True, rings=True):
         m = self.cfg["machine"]
         parts = [C.Floor(0.0)]
         ped = m["pedestal"]
         parts.append(C.Pedestal(ped["half_width"], ped["height"],
                                 self.holes_xy(offset) if with_holes else [],
                                 ped["hole_radius"], ped["sink_radius"], ped["sink_depth"]))
+        if self.layout == "rings":
+            if rings:
+                for row, rg in enumerate(m["rings"]):
+                    for i in range(self.n):
+                        cx, cy = self.ring_xy(i)
+                        parts.append(C.FloatingRing(cx, cy, self.ring_major(rg), rg["tube"],
+                                                    (lambda t, row=row, i=i: self.ring_z(row, i, t)),
+                                                    rg.get("bob", 0.0)))
+            return C.SceneSDF(parts)
         for gi, g in enumerate(m["gates"]):
             if wires:
                 parts.append(C.Ring(g["radius"] + self.wire_offset(g), g["wire"],
@@ -100,11 +127,9 @@ class Machine:
         m = self.cfg["machine"]
         tm = self.cfg["timing"]
         verts, tris = make_piece(m["piece_shape"], m["piece_size"], m["piece_detail"])
-        g0 = m["gates"][0]
-        inset = self.groove()[0]
+        r = m["gates"][0]["radius"] if (self.layout == "gates" and m.get("gates")) else m.get("ring_offset", 0.5)
         bodies = []
         for i, a in enumerate(self.piece_angles):
-            r = g0["radius"] - inset
             # tiny deterministic stagger so the two pieces don't move like clones
             z = tm["spawn_height"] + 0.12 * i
             pos = (r * math.cos(a), r * math.sin(a), z)
@@ -136,12 +161,17 @@ class Machine:
                                  self.cfg["machine"]["piece_size"],
                                  self.cfg["machine"]["piece_detail"])
         q = verts - verts.mean(0)
-        cen, rot, impacts = self.build_paths(world, q, nf * sub, dt)
+        rings = self.layout == "rings"
+        if not rings:
+            cen, rot, impacts = self.build_paths(world, q, nf * sub, dt)
         out_pos, out_imp = {}, {}
 
         for si in steps:
             st = self.steps[si]
             s_ = float(st["softness"]) * intensity
+            if rings:
+                cen, impacts = self.build_ring_paths(q, nf * sub, dt, s_)
+                rot = [np.repeat(np.eye(3)[None], nf * sub, 0) for _ in range(self.n)]
             if s_ <= 0.02:
                 for lf in range(nf):
                     k = lf * sub
@@ -150,7 +180,7 @@ class Machine:
                                   for i in range(self.n)]
                     out_imp[f] = [impacts[i][lf * sub:(lf + 1) * sub].max() for i in range(self.n)]
             else:
-                paths = self._drain_paths(np.stack(cen, 1), s_, offset, dt)
+                paths = cen if rings else self._drain_paths(np.stack(cen, 1), s_, offset, dt)
                 bodies, _ = self.spawn(st["softness"], intensity)
                 for i, b in enumerate(bodies):
                     b.x = q @ rot[i][0].T + paths[i][0]
@@ -167,6 +197,103 @@ class Machine:
                     out_imp[f] = fi
             log(f"  step {si + 1}/{len(self.steps)} simulated (softness {st['softness']:.2f})")
         return {"positions": out_pos, "impacts": out_imp, "tris": tris}
+
+    # ------------------------------------------------------------ ring choreography
+    def build_ring_paths(self, q, n_sub, dt, s):
+        """Each piece drops onto its floating ring. Depending on softness it
+        rests on top (rigid), sinks into it, or squeezes through, falls onto
+        the pedestal and then sinks / squeezes into the hole below.
+        Thresholds make the progression readable:
+          ring: passes from 45% soft;  hole: passes from 70% soft."""
+        m = self.cfg["machine"]
+        tm = self.cfg["timing"]
+        g = 9.81
+        rb = m["piece_size"]
+        rows = m["rings"]
+        T = np.arange(n_sub) * dt
+        stages = []  # (kind, row) ring rows then the hole
+        for row in range(len(rows)):
+            th = 0.45 if len(rows) == 1 else 0.3 + 0.25 * row / (len(rows) - 1)
+            stages.append(("ring", row, th))
+        stages.append(("hole", None, 0.7))
+        hole_world = self.world(self.hole_offset, rings=False)
+        cens, imps = [], []
+        for i in range(self.n):
+            xy = self.ring_xy(i)
+            # rest offsets measured against the real geometry
+            offs = []
+            for row, rg in enumerate(rows):
+                w = C.SceneSDF([C.FloatingRing(xy[0], xy[1], self.ring_major(rg), rg["tube"],
+                                               lambda t, h=rg["height"]: h)])
+                offs.append(self.rest_z(w, q, xy, 0.0, rg["height"] + 3 * rb) - rg["height"])
+            z_ped = self.rest_z(hole_world, q, xy, 0.0, m["pedestal"]["height"] + 3 * rb)
+            cen = np.zeros((n_sub, 3))
+            cen[:, :2] = xy
+            imp = np.zeros(n_sub)
+            z = tm["spawn_height"] + 0.15 * i
+            v = 0.0
+            mode = "fall"
+            stage = 0
+            t_mode = 0.0
+            z_base = None
+            v_imp = 0.0
+            e = 0.3 * (1 - s) ** 2 + 0.04
+            for k, t in enumerate(T):
+                if mode == "fall":
+                    v += g * dt
+                    z -= v * dt
+                    kind, row, th = stages[stage]
+                    support = (self.ring_z(row, i, t) + offs[row]) if kind == "ring" else z_ped
+                    if z <= support:
+                        z = support
+                        v_imp = v
+                        imp[k] = v
+                        v = 0.0
+                        mode, t_mode = "rest", t
+                elif mode == "rest":
+                    kind, row, th = stages[stage]
+                    base = (self.ring_z(row, i, t) + offs[row]) if kind == "ring" else z_ped
+                    tau = t - t_mode
+                    # decaying bounces
+                    vb, b, tt = v_imp * e, 0.0, tau
+                    while vb > 0.25:
+                        d = 2 * vb / g
+                        if tt < d:
+                            b = vb * tt - 0.5 * g * tt * tt
+                            break
+                        tt -= d
+                        vb *= e
+                    z = base + b
+                    wait = (0.32 if kind == "ring" else 0.22) + 0.08 * i
+                    if s > 0.02 and tau > wait:
+                        mode, t_mode, z_base = "squeeze", t, (kind, row, th)
+                elif mode == "squeeze":
+                    kind, row, th = z_base
+                    base = (self.ring_z(row, i, t) + offs[row]) if kind == "ring" else z_ped
+                    tau = t - t_mode
+                    acc = 1.2 + 10.0 * s
+                    depth = 0.5 * acc * tau * tau
+                    passes = s >= th
+                    if not passes:
+                        dmax = (s / th) ** 1.3 * 0.85 * rb
+                        # ease into the stuck depth (no hard stop)
+                        depth = dmax * (1 - math.exp(-depth / max(dmax, 1e-6)))
+                    z = base - depth
+                    through = (offs[row] + rb * 1.05) if kind == "ring" else (z_ped - m["pedestal"]["height"] + 2.2 * rb)
+                    if passes and depth >= through:
+                        v = acc * tau
+                        if stage + 1 < len(stages):
+                            stage += 1
+                            mode = "fall"
+                        else:
+                            mode = "gone"
+                elif mode == "gone":
+                    v += g * dt
+                    z -= v * dt
+                cen[k, 2] = z
+            cens.append(cen)
+            imps.append(imp)
+        return cens, imps
 
     # ------------------------------------------------------------ choreography
     def rest_z(self, world, q, xy, t, z_hi):
@@ -378,6 +505,8 @@ class Machine:
         return None
 
     def calibrate(self, log=print):
+        if self.layout == "rings":
+            return self.hole_offset
         """Design the machine around the real trajectory: each lower gate and
         the pedestal holes are placed exactly where a rigid piece falls."""
         m = self.cfg["machine"]

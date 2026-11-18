@@ -56,6 +56,20 @@ class Ring:
         return np.hypot(q0, P[:, 2] - self.z) - self.r
 
 
+class FloatingRing:
+    """Gold torus floating horizontally at (cx, cy); its height is a
+    function of time (gentle bob)."""
+
+    def __init__(self, cx, cy, R, r, z_fn, amp=0.0):
+        self.cx, self.cy, self.R, self.r = cx, cy, R, r
+        self.z_fn = z_fn
+        self.slab = (z_fn(0.0), r + amp + 1e-3)
+
+    def sdf(self, P, t):
+        q0 = np.hypot(P[:, 0] - self.cx, P[:, 1] - self.cy) - self.R
+        return np.hypot(q0, P[:, 2] - self.z_fn(t)) - self.r
+
+
 class Sleeve:
     """Arc of a thick torus (a concrete sleeve sliding along a ring). Its
     centre angle is a function of time so the gate can open and close."""

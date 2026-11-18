@@ -15,14 +15,15 @@ DEFAULTS = {
         "threads": 0,                 # 0 = all cores
         "persistent_data": False,     # faster, but Cycles 5.x corrupts shaders over long runs
         "fps": 30,
-        "samples": 20,
+        "samples": 24,
         "adaptive_threshold": 0.03,
         "denoise": True,
         "view_transform": "AgX",
         "look": "AgX - Base Contrast",
         "exposure": 0.0,
         "crf": 16,
-        "piece_subdivision": 2,   # render-time smoothing of the soft pieces
+        "piece_subdivision": 2,   # render-time subdivision of the pieces
+        "skin_smoothing": 10,      # Taubin passes on soft pieces (removes creases)
         "motion_blur": False,
         "motion_blur_shutter": 0.35,
     },
@@ -43,18 +44,24 @@ DEFAULTS = {
     "machine": {
         "pieces": 2,
         "piece_shape": "sphere",   # sphere | capsule | rounded_cube | coin
-        "piece_size": 0.26,
+        "piece_size": 0.31,
         "piece_detail": 4,
-        "orientation": -24.0,      # degrees, rotates the whole layout around Z
+        "layout": "rings",         # rings: floating gold rings | gates: rotating sleeves
+        "orientation": 0.0,        # degrees, rotates the whole layout around Z
+        "ring_offset": 0.54,       # distance of each ring (and hole) from the centre
+        "rings": [
+            # inner = radius of the opening, tube = thickness of the gold torus
+            {"inner": 0.2, "tube": 0.075, "height": 3.05, "bob": 0.035, "period": 2.6},
+        ],
         "gates": [
             {"radius": 1.0, "height": 3.15, "wire": 0.028, "sleeve": 0.16, "span": 74},
             {"radius": 0.82, "height": 2.42, "wire": 0.026, "sleeve": 0.145, "span": 74},
         ],
         "pedestal": {
-            "half_width": 1.1,
+            "half_width": 1.2,
             "height": 1.62,
-            "hole_radius": 0.205,
-            "sink_radius": 0.62,     # gentle conical dish around the hole
+            "hole_radius": 0.235,
+            "sink_radius": 0.31,     # countersink around the hole
             "sink_depth": 0.07,
             "hole_offset": 0.0,      # 0 = one central hole (reference); 'auto' = one hole per piece where it lands
             "trim": 0.05,
@@ -63,7 +70,7 @@ DEFAULTS = {
         "body_material": "concrete",
     },
     "timing": {
-        "step_duration": 3.3,      # seconds (video time) per softness / material step
+        "step_duration": 2.8,      # seconds (video time) per softness / material step
         "speed": 1.3,              # >1 = snappier motion (machine time per video second)
         "spawn_height": 4.9,
         "gate_close": [0.0, 0.55], # [start, duration] of gates closing (all)

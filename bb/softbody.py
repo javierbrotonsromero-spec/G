@@ -15,11 +15,11 @@ def softness_params(s, intensity=1.0):
     return dict(
         alpha=10 ** (-1.7 * s ** 1.15),       # shape-matching stiffness / substep
         beta=0.6 * s,                          # allowed linear (squash) deformation
-        volume=1.0 - 0.12 * s ** 2.5,          # 100% soft loses a bit of pressure
+        volume=1.0,                            # keeps the skin taut: smooth, no foil creases
         friction=0.25 + 0.45 * s,
         restitution=0.12 * (1 - s) ** 2,
         damping=0.002 + 0.03 * s,
-        edge_k=0.9,
+        edge_k=0.6,
         softness=s,
     )
 

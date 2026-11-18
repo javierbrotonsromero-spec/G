@@ -151,7 +151,7 @@ def _metal(g, vec, d, color, rough, var=0.04, bump=0.015):
 
 @material("gold")
 def m_gold(g, vec, d):
-    return _metal(g, vec, d, (1.0, 0.66, 0.16), 0.13)
+    return _metal(g, vec, d, (1.0, 0.74, 0.26), 0.12)
 
 
 @material("silver")

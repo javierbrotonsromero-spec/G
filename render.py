@@ -134,7 +134,8 @@ def main():
             path = os.path.join(ROOT, "work", f"{name}_still_{f:04d}.png")
         elif os.path.exists(path) and not args.fresh:
             continue
-        sc.set_frame(f, data["positions"][f], material_state(cfg, mc, f), f / fps)
+        soft = cfg["progression"]["steps"][mc.step_of_frame(f)[0]]["softness"] > 0.02
+        sc.set_frame(f, data["positions"][f], material_state(cfg, mc, f), f / fps, soft=soft)
         sc.scene.render.filepath = path
         ts = time.time()
         import bpy

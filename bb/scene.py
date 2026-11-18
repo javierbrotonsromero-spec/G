@@ -57,7 +57,12 @@ class Scene:
         self.mat_body = M.static_material("Body", m["body_material"], detail)
         self.mat_trim = M.static_material("Trim", m["trim_material"], detail)
         self._pedestal()
-        self._gates()
+        self.sleeves = []
+        self.rings = []
+        if self.mc.layout == "rings":
+            self._rings()
+        else:
+            self._gates()
         self._pieces()
 
     # ------------------------------------------------------------ settings
@@ -335,6 +340,17 @@ class Scene:
                 sub.render_levels = 1
                 self.sleeves.append((ob, gi, a))
 
+    def _rings(self):
+        """Floating gold rings, one above each hole."""
+        m = self.cfg["machine"]
+        for row, rg in enumerate(m["rings"]):
+            tv, tf = torus(self.mc.ring_major(rg), rg["tube"], 160, 48)
+            for i in range(self.mc.n):
+                ob = mesh_object(f"Ring{row}_{i}", tv, tf, self.mat_trim)
+                x, y = self.mc.ring_xy(i)
+                ob.location = (x, y, rg["height"])
+                self.rings.append((ob, row, i))
+
     def _pieces(self):
         m = self.cfg["machine"]
         from .meshgen import make_piece
@@ -362,13 +378,36 @@ class Scene:
                 sub.levels = 0
                 sub.render_levels = lv
             self.pieces.append(ob)
+        # neighbour structure for Taubin smoothing of the soft skin
+        e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+        e = np.unique(np.sort(e, 1), axis=0)
+        self._e = np.concatenate([e, e[:, ::-1]])
+        self._deg = np.bincount(self._e[:, 0], minlength=len(verts)).astype(np.float32)
+
+    def smooth(self, x, iters=None):
+        """Taubin (lambda|mu) smoothing: removes simulation creases and
+        faceting without shrinking the piece, so reflections stay clean."""
+        iters = int(self.cfg["render"].get("skin_smoothing", 6)) if iters is None else iters
+        x = x.astype(np.float64)
+        n = len(x)
+        for k in range(iters * 2):
+            f = 0.5 if k % 2 == 0 else -0.53
+            nb = np.zeros_like(x)
+            for c in range(3):
+                nb[:, c] = np.bincount(self._e[:, 0], x[self._e[:, 1], c], n)
+            x = x + f * (nb / self._deg[:, None] - x)
+        return x.astype(np.float32)
 
     # ------------------------------------------------------------ per frame
-    def set_frame(self, f, positions, material_state, time_s):
+    def set_frame(self, f, positions, material_state, time_s, soft=False):
         si, lf, t = self.mc.step_of_frame(f)
         t_sim = t * self.mc.speed
         for ob, gi, a in self.sleeves:
             ob.rotation_euler = (0, 0, a + self.mc.gate_angle(gi, t_sim))
+        for ob, row, i in self.rings:
+            x, y = self.mc.ring_xy(i)
+            ob.location = (x, y, self.mc.ring_z(row, i, t_sim))
+            ob.rotation_euler = (0, 0, 0.35 * t_sim + i)  # slow spin: moving highlights
         for ob, x in zip(self.pieces, positions):
             if x is None:
                 # gone through the hole: park it below the floor instead of
@@ -376,6 +415,8 @@ class Scene:
                 ob.location = (0.0, 0.0, -100.0)
                 continue
             ob.location = (0.0, 0.0, 0.0)
+            if soft:
+                x = self.smooth(x)
             ob.data.vertices.foreach_set("co", x.ravel())
             ob.data.update()
         a, b, prog, mode = material_state
