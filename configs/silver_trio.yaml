@@ -1,0 +1,17 @@
+# Variation: three chrome-silver balls, cool backdrop, slightly snappier.
+name: silver_trio
+output: renders/silver_trio.mp4
+
+machine:
+  pieces: 3
+  piece_size: 0.22
+  orientation: -90
+  trim_material: silver
+timing:
+  speed: 1.4
+progression:
+  label: "{pct}% Soft"
+  softness: [0.0, 0.33, 0.66, 1.0]
+  materials: [chrome]
+lighting:
+  background: "#AEB7C0"

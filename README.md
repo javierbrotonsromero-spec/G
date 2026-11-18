@@ -70,6 +70,13 @@ python3 render.py configs/material_morph.yaml --set timing.speed=1.5 --set machi
 * `ffmpeg` en el PATH.
 * Sin GPU funciona con Cycles en CPU. No usa APIs de pago ni servicios externos.
 
+### Ejemplos incluidos
+
+* `configs/soft_gold.yaml` — fiel a la referencia: 2 bolas de oro, 0→100% Soft.
+* `configs/material_morph.yaml` — cromo → oro → mármol → cristal → arena → metal líquido,
+  cada paso un poco más blando; el material nuevo se extiende por la superficie mientras cae.
+* `configs/silver_trio.yaml` — 3 bolas cromadas, fondo frío, ritmo más rápido.
+
 ## 4. Configuración
 
 Todo es opcional: un YAML solo necesita lo que cambia respecto a `bb/config.py`.
@@ -80,8 +87,8 @@ Todo es opcional: un YAML solo necesita lo que cambia respecto a `bb/config.py`.
 | `progression.steps` | Lista explícita `{softness, material, label}` (textura inicial, intermedias, final) |
 | `progression.label` | Plantilla del rótulo: `"{pct}% Soft"`, `"{material}"`… |
 | `progression.morph` | Tipo de transformación de material: `spread` (avanza por la superficie), `fade`, `cut`; y `duration` |
-| `machine.piece_shape` | `sphere`, `capsule`, `rounded_cube`, `coin` |
-| `machine.pieces` | Nº de piezas (1–4) |
+| `machine.piece_shape` | `sphere` (recomendado). `capsule`, `rounded_cube`, `coin` son experimentales: la máquina está diseñada para esferas |
+| `machine.pieces` | Nº de piezas (1–4); la primera tapona el agujero y el resto se apoya alrededor |
 | `machine.piece_size`, `gates`, `pedestal` | Geometría de la máquina |
 | `machine.body_material`, `trim_material` | Materiales de hormigón y ribetes |
 | `timing.step_duration`, `timing.speed` | Duración de cada paso y velocidad del movimiento |
@@ -108,13 +115,14 @@ bb/meshgen.py          generadores de mallas (icoesfera, cápsula, toro, mangas)
 bb/scene.py            escena Blender: fondo, cámara, luces, geometría, render
 bb/materials.py        librería de materiales procedurales y material de transición
 bb/post.py             rótulo, SFX opcional y codificación H.264
-configs/*.yaml         vídeos de ejemplo
+configs/*.yaml         vídeos de ejemplo (soft_gold = referencia, material_morph, silver_trio)
 renders/               vídeos finales
 ```
 
 ## 6. Rendimiento
 
-En 4 núcleos de CPU sin GPU, un fotograma 720×1280 a 20 muestras + OIDN tarda ~15 s
-(el vídeo de 16,5 s ≈ 2 h). Por defecto se renderiza a 2/3 y se reescala a 1080×1920 al
+En 4 núcleos de CPU sin GPU, un fotograma 720×1280 a 20 muestras + OIDN tarda ~24 s
+(el vídeo de 16,5 s ≈ 3,3 h). `render.persistent_data` está desactivado por defecto: en
+Blender 5.x corrompe materiales en renders largos con geometría deformable. Por defecto se renderiza a 2/3 y se reescala a 1080×1920 al
 codificar; con GPU o más tiempo, `--set render.render_scale=1.0 --set render.samples=48`
 da render nativo.
