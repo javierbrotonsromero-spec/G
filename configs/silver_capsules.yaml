@@ -1,0 +1,18 @@
+# Variation: three silver capsules, faster, darker concrete-free look.
+name: silver_capsules
+output: renders/silver_capsules.mp4
+
+machine:
+  pieces: 3
+  piece_shape: capsule
+  piece_size: 0.2
+  orientation: -90
+  trim_material: silver
+timing:
+  speed: 1.1
+progression:
+  label: "{pct}% Soft"
+  softness: [0.0, 0.33, 0.66, 1.0]
+  materials: [silver]
+lighting:
+  background: "#A9B4BE"

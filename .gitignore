@@ -1,0 +1,6 @@
+work/
+__pycache__/
+*.pyc
+renders/*_preview.mp4
+renders/*_draft.mp4
+*.log

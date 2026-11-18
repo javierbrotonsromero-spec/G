@@ -1,0 +1,14 @@
+# Reference-faithful "X% Soft" video: two polished gold balls drop through
+# two concrete ring gates onto a concrete pedestal. Each step the balls are
+# softer: 0% gets stuck in the hole, 100% squeezes through like jelly.
+name: soft_gold
+output: renders/soft_gold.mp4
+
+progression:
+  label: "{pct}% Soft"
+  softness: [0.0, 0.25, 0.5, 0.75, 1.0]
+  materials: [gold]
+
+machine:
+  pieces: 2
+  piece_shape: sphere

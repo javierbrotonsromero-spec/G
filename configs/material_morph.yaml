@@ -1,0 +1,16 @@
+# Texture-transformation video: same machine, every step the balls turn
+# into a new material while falling (the new material spreads from the
+# bottom up), and they get a little softer each time.
+name: material_morph
+output: renders/material_morph.mp4
+
+progression:
+  label: "{material}"
+  steps:
+    - {material: chrome,       softness: 0.0}
+    - {material: gold,         softness: 0.15}
+    - {material: marble,       softness: 0.3}
+    - {material: glass,        softness: 0.5}
+    - {material: sand,         softness: 0.7}
+    - {material: liquid_metal, softness: 1.0}
+  morph: {mode: spread, duration: 0.9}
