@@ -22,7 +22,7 @@ DEFAULTS = {
         "look": "AgX - Base Contrast",
         "exposure": 0.0,
         "crf": 16,
-        "piece_subdivision": 2,   # render-time subdivision of the pieces
+        "piece_subdivision": 1,   # render-time subdivision of the pieces
         "skin_smoothing": 10,      # Taubin passes on soft pieces (removes creases)
         "motion_blur": False,
         "motion_blur_shutter": 0.35,
@@ -45,7 +45,7 @@ DEFAULTS = {
         "pieces": 2,
         "piece_shape": "sphere",   # sphere | capsule | rounded_cube | coin
         "piece_size": 0.31,
-        "piece_detail": 4,
+        "piece_detail": 5,
         "layout": "rings",         # rings: floating gold rings | gates: rotating sleeves
         "orientation": 0.0,        # degrees, rotates the whole layout around Z
         "ring_offset": 0.54,       # distance of each ring (and hole) from the centre

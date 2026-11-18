@@ -64,6 +64,9 @@ class Scene:
         else:
             self._gates()
         self._pieces()
+        # colliders, used to keep the smoothed / subdivided skin outside the
+        # rings and the pedestal (clean contact edges, no zig-zag)
+        self.world = self.mc.world(self.hole_offset, wires=False)
 
     # ------------------------------------------------------------ settings
     def _render_settings(self):
@@ -398,6 +401,20 @@ class Scene:
             x = x + f * (nb / self._deg[:, None] - x)
         return x.astype(np.float32)
 
+    def project_out(self, x, t, margin=0.011):
+        """Push vertices that ended up inside (or too close to) a collider
+        back onto a thin offset surface. The margin covers the inward shrink
+        of render-time subdivision, so the contact line stays smooth."""
+        x = x.astype(np.float64)
+        for _ in range(2):
+            d = self.world.sdf(x, t)
+            m = d < margin
+            if not m.any():
+                break
+            dd, nn = self.world.sdf_grad(x[m], t)
+            x[m] += (margin - dd)[:, None] * nn
+        return x.astype(np.float32)
+
     # ------------------------------------------------------------ per frame
     def set_frame(self, f, positions, material_state, time_s, soft=False):
         si, lf, t = self.mc.step_of_frame(f)
@@ -416,7 +433,13 @@ class Scene:
                 continue
             ob.location = (0.0, 0.0, 0.0)
             if soft:
-                x = self.smooth(x)
+                # alternate smoothing and collider projection: the skin
+                # relaxes into a clean shape that hugs the ring without a
+                # wavy collar at the contact
+                n = int(self.cfg["render"].get("skin_smoothing", 10))
+                for _ in range(4):
+                    x = self.smooth(x, max(1, n // 2))
+                    x = self.project_out(x, t_sim)
             ob.data.vertices.foreach_set("co", x.ravel())
             ob.data.update()
         a, b, prog, mode = material_state
