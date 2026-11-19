@@ -191,6 +191,10 @@ class Machine:
                     fi = [0.0] * self.n
                     for k in range(sub):
                         kk = lf * sub + k
+                        if rings:
+                            for bi, b in enumerate(bodies):
+                                fz, fk = self.funnels[bi][kk]
+                                b.funnel = None if np.isnan(fz) else (*self.ring_xy(bi), fz, fk)
                         step_all(bodies, dt, world, kk * dt, targets=[p[kk] for p in paths])
                         for bi, b in enumerate(bodies):
                             fi[bi] = max(fi[bi], b.impact)
@@ -217,7 +221,7 @@ class Machine:
             stages.append(("ring", row, th))
         stages.append(("hole", None, 0.7))
         hole_world = self.world(self.hole_offset, rings=False)
-        cens, imps = [], []
+        cens, imps, funs = [], [], []
         for i in range(self.n):
             xy = self.ring_xy(i)
             # rest offsets measured against the real geometry
@@ -230,6 +234,7 @@ class Machine:
             cen = np.zeros((n_sub, 3))
             cen[:, :2] = xy
             imp = np.zeros(n_sub)
+            fun = np.full((n_sub, 2), np.nan)  # (plane z, strength) while squeezing
             z = tm["spawn_height"] + 0.15 * i
             v = 0.0
             mode = "fall"
@@ -271,14 +276,19 @@ class Machine:
                     kind, row, th = z_base
                     base = (self.ring_z(row, i, t) + offs[row]) if kind == "ring" else z_ped
                     tau = t - t_mode
-                    acc = 1.2 + 10.0 * s
-                    depth = 0.5 * acc * tau * tau
                     passes = s >= th
+                    # a passing piece squeezes through slowly enough for the
+                    # skin to stretch into a clean hourglass / sausage
+                    acc = (2.2 + 3.0 * s) if passes else (1.2 + 10.0 * s)
+                    depth = 0.5 * acc * tau * tau
                     if not passes:
                         dmax = (s / th) ** 1.3 * 0.85 * rb
                         # ease into the stuck depth (no hard stop)
                         depth = dmax * (1 - math.exp(-depth / max(dmax, 1e-6)))
                     z = base - depth
+                    if passes:
+                        plane = self.ring_z(row, i, t) if kind == "ring" else m["pedestal"]["height"]
+                        fun[k] = (plane, 0.008 + 0.017 * s)
                     through = (offs[row] + rb * 1.05) if kind == "ring" else (z_ped - m["pedestal"]["height"] + 2.2 * rb)
                     if passes and depth >= through:
                         v = acc * tau
@@ -290,9 +300,20 @@ class Machine:
                 elif mode == "gone":
                     v += g * dt
                     z -= v * dt
+                    fun[k] = (m["pedestal"]["height"], 0.008 + 0.017 * s)
                 cen[k, 2] = z
+            # keep the funnel on while the piece is still crossing the
+            # opening it just squeezed through (a few tenths of a second)
+            last = None
+            for k in range(n_sub):
+                if not np.isnan(fun[k, 0]):
+                    last = (k, fun[k].copy())
+                elif last is not None and k - last[0] < int(0.25 / dt):
+                    fun[k] = last[1]
             cens.append(cen)
             imps.append(imp)
+            funs.append(fun)
+        self.funnels = funs
         return cens, imps
 
     # ------------------------------------------------------------ choreography

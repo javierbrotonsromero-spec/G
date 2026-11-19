@@ -48,7 +48,8 @@ class SoftBody:
         self.target = None   # path centre the body is tethered to (or None)
         self.tether = 0.08   # tether strength per substep
         self.radius = float(np.linalg.norm(self.q, axis=1).max())
-        self.max_stretch = 1.75
+        self.max_stretch = 2.8
+        self.funnel = None   # (axis_x, axis_y, plane_z, strength) while squeezing
 
     # ------------------------------------------------------------------
     def volume(self, x):
@@ -159,6 +160,16 @@ class SoftBody:
             self._shape_match(x, w)
         if last and self.target is not None:
             x += self.tether * (self.target - x.mean(0))
+        if last and self.funnel is not None and not rigid:
+            # material above an opening flows towards its axis (hourglass
+            # squeeze) instead of spreading into a disc on the rim
+            ax, ay, zf, k = self.funnel
+            h = x[:, 2] - zf
+            m = h > -0.02
+            if m.any():
+                w = np.exp(-np.maximum(h[m], 0.0) / (0.6 * self.radius))
+                x[m, 0] -= k * w * (x[m, 0] - ax)
+                x[m, 1] -= k * w * (x[m, 1] - ay)
         if not rigid:
             # long-range stretch limit: no part of the piece may drift further
             # than max_stretch radii from its centre (Jacobi edge constraints
