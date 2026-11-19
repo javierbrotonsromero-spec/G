@@ -13,7 +13,7 @@ import numpy as np
 def softness_params(s, intensity=1.0):
     s = float(np.clip(s * intensity, 0.0, 1.0))
     return dict(
-        alpha=10 ** (-1.7 * s ** 1.15),       # shape-matching stiffness / substep
+        alpha=10 ** (-1.3 * s ** 1.15),       # shape-matching stiffness / substep
         beta=0.6 * s,                          # allowed linear (squash) deformation
         volume=1.0,                            # keeps the skin taut: smooth, no foil creases
         friction=0.25 + 0.45 * s,
@@ -48,7 +48,7 @@ class SoftBody:
         self.target = None   # path centre the body is tethered to (or None)
         self.tether = 0.08   # tether strength per substep
         self.radius = float(np.linalg.norm(self.q, axis=1).max())
-        self.max_stretch = 2.8
+        self.max_stretch = 2.3
         self.funnel = None   # (axis_x, axis_y, plane_z, strength) while squeezing
 
     # ------------------------------------------------------------------
