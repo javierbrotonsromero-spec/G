@@ -10,7 +10,7 @@ DEFAULTS = {
     "seed": 7,
     "render": {
         "resolution": [1080, 1920],   # final video size
-        "render_scale": 0.6667,       # frames are rendered at this fraction and
+        "render_scale": 0.75,         # frames are rendered at this fraction and
                                       # upscaled on encode (1.0 = native, ~2.3x slower)
         "threads": 0,                 # 0 = all cores
         "persistent_data": False,     # faster, but Cycles 5.x corrupts shaders over long runs

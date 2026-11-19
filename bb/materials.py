@@ -151,7 +151,9 @@ def _metal(g, vec, d, color, rough, var=0.04, bump=0.015):
 
 @material("gold")
 def m_gold(g, vec, d):
-    return _metal(g, vec, d, (1.0, 0.74, 0.26), 0.12)
+    # saturated yellow gold like the reference (not rose / copper), with a
+    # satin roughness so the mauve studio reflections stay soft
+    return _metal(g, vec, d, (1.0, 0.64, 0.015), 0.2, var=0.03, bump=0.01)
 
 
 @material("silver")
@@ -197,29 +199,32 @@ def m_mercury(g, vec, d):
 # ---------------------------------------------------------------- stones
 @material("concrete")
 def m_concrete(g, vec, d):
-    n1 = g.noise(vec, 2.5, 8.0, 0.62)
-    col = g.ramp(n1.outputs["Fac"], [(0.3, (0.045, 0.045, 0.043)), (0.72, (0.09, 0.088, 0.084))])
-    # pitted surface: small craters (voronoi) + fine grain + large waviness
-    vor = g.n("ShaderNodeTexVoronoi", inputs={"Scale": 24.0, "Randomness": 1.0})
+    """Rough stucco-like concrete of the reference: crisp ridges and
+    crevices at a scale that survives the final resolution, neutral grey."""
+    ridge = g.n("ShaderNodeTexNoise", noise_type="RIDGED_MULTIFRACTAL",
+                inputs={"Scale": 26.0, "Detail": 6.0, "Roughness": 0.6, "Lacunarity": 2.2,
+                        "Distortion": 0.25})
+    g.link(vec, ridge.inputs["Vector"])
+    grain = g.noise(vec, 70.0, 6.0, 0.7)
+    big = g.noise(vec, 1.6, 4.0, 0.55)
+    vor = g.n("ShaderNodeTexVoronoi", inputs={"Scale": 22.0, "Randomness": 1.0})
     g.link(vec, vor.inputs["Vector"])
-    pits = g.ramp(vor.outputs["Distance"], [(0.0, (0, 0, 0)), (0.3, (1, 1, 1))])
-    vor2 = g.n("ShaderNodeTexVoronoi", inputs={"Scale": 110.0, "Randomness": 1.0})
-    g.link(vec, vor2.inputs["Vector"])
-    pits2 = g.ramp(vor2.outputs["Distance"], [(0.0, (0, 0, 0)), (0.25, (1, 1, 1))])
-    fine = g.noise(vec, 160.0, 6.0, 0.75)
-    h = g.math("MULTIPLY_ADD", fine.outputs["Fac"], 0.5, pits.outputs["Color"])
-    h = g.math("MULTIPLY_ADD", pits2.outputs["Color"], 0.6, h)
-    b = g.bump(h, 0.45 * d, 0.012)
-    lumps = g.noise(vec, 14.0, 5.0, 0.6)
-    b1 = g.bump(lumps.outputs["Fac"], 0.6 * d, 0.03, normal=b.outputs["Normal"])
-    b2 = g.bump(n1.outputs["Fac"], 0.2 * d, 0.06, normal=b1.outputs["Normal"])
-    # crater bottoms are a bit darker (dirt / occlusion)
-    occ = g.mix_rgb(pits.outputs["Color"], (0.8, 0.8, 0.8), (1.0, 1.0, 1.0))
-    col2 = g.mix_rgb(1.0, col.outputs["Color"], occ)
-    col2.node.blend_type = "MULTIPLY"
-    r = g.math("MULTIPLY_ADD", n1.outputs["Fac"], 0.12, 0.78)
-    return g.bsdf(**{"Base Color": col2, "Roughness": r,
-                     "Normal": b2.outputs["Normal"]}).outputs["BSDF"]
+    pits = g.ramp(vor.outputs["Distance"], [(0.0, (0, 0, 0)), (0.18, (1, 1, 1))])
+    h = g.math("MULTIPLY", ridge.outputs["Fac"], 0.55)
+    h = g.math("MULTIPLY_ADD", grain.outputs["Fac"], 0.45, h)
+    h = g.math("MULTIPLY_ADD", pits.outputs["Color"], 0.18, h)
+    b1 = g.bump(h, 1.0 * d, 0.3)
+    b2 = g.bump(big.outputs["Fac"], 0.15 * d, 0.1, normal=b1.outputs["Normal"])
+    # cavity shading baked into the albedo: crevices dark, ridges light, as in
+    # the reference where the relief reads strongly under the soft key light
+    cav = g.ramp(h, [(0.15, (0.11, 0.11, 0.11)), (0.5, (0.205, 0.205, 0.2)),
+                     (0.85, (0.27, 0.27, 0.265))])
+    var = g.ramp(big.outputs["Fac"], [(0.3, (0.9, 0.9, 0.9)), (0.7, (1.05, 1.05, 1.05))])
+    col = g.mix_rgb(1.0, cav.outputs["Color"], var.outputs["Color"])
+    col.node.blend_type = "MULTIPLY"
+    r = g.math("MULTIPLY_ADD", grain.outputs["Fac"], 0.1, 0.82)
+    return g.bsdf(**{"Base Color": col, "Roughness": r,
+                     "Specular IOR Level": 0.35, "Normal": b2.outputs["Normal"]}).outputs["BSDF"]
 
 
 @material("stone")

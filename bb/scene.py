@@ -203,10 +203,10 @@ class Scene:
         a = math.radians(li["key_angle"])
         tgt = (0, 0, 2.4)
         # large key softbox front-left, high
-        self._area("Key", (-7.5 * math.sin(a) - 2.0, -7.5 * math.cos(a), 8.5), tgt,
-                   5.0, 2400 * k, (1.0, 0.97, 0.93), 3.5)
+        self._area("Key", (-7.5 * math.sin(a) - 3.5, -7.5 * math.cos(a) + 1.5, 7.5), tgt,
+                   4.0, 2600 * k, (1.0, 0.97, 0.93), 3.0)
         # soft fill front-right
-        self._area("Fill", (7.0, -5.0, 5.0), tgt, 5.0, 380 * k, (0.95, 0.96, 1.0))
+        self._area("Fill", (7.0, -5.0, 5.0), tgt, 5.0, 220 * k, (0.95, 0.96, 1.0))
         # top light for the bright highlight band on metal / pedestal top
         self._area("Top", (0.5, -1.0, 11.0), (0, 0, 2.0), 4.0, 900 * k, (1.0, 0.98, 0.95))
         # rim from behind to separate objects from the backdrop
