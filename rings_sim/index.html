@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ring Escape</title>
+<style>
+  :root { --ui: #e8e8ee; --ui-dim: #8a8a99; --accent: #ff3d6e; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--ui);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { background: #000; height: 100vh; width: calc(100vh * 9 / 16); max-width: 100vw;
+    max-height: calc(100vw * 16 / 9); display: block; }
+  #ui { position: fixed; top: 10px; left: 10px; display: flex; gap: 6px; flex-wrap: wrap;
+    align-items: center; z-index: 2; opacity: .85; transition: opacity .3s; }
+  #ui.hidden { opacity: 0; pointer-events: none; }
+  button { background: #16161d; color: var(--ui); border: 1px solid #33333f; border-radius: 6px;
+    padding: 6px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: #55556a; }
+  button.rec { border-color: var(--accent); color: #fff; background: #3a0f1c; }
+  #info { color: var(--ui-dim); font-size: 12px; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    z-index: 3; background: rgba(0,0,0,.55); cursor: pointer; font-size: 20px; letter-spacing: .02em; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="1080" height="1920"></canvas></div>
+<div id="ui">
+  <button id="bRestart" title="Tecla R">↻ Reiniciar (R)</button>
+  <button id="bRec" title="Tecla G">● Grabar (G)</button>
+  <button id="bMute" title="Tecla M">Sonido: sí (M)</button>
+  <button id="bHide" title="Tecla H">Ocultar UI (H)</button>
+  <span id="info"></span>
+</div>
+<div id="start">Toca o pulsa una tecla para empezar</div>
+<script>
+"use strict";
+// ============================================================================
+// CONFIG — todo lo ajustable está aquí
+// ============================================================================
+const CONFIG = {
+  // escena
+  width: 1080, height: 1920, fps: 60,
+  rings: 150,              // número de anillos
+  ringSpacing: 7,          // separación entre anillos (px)
+  ringWidth: 2.6,          // grosor del trazo (px en pantalla)
+  gapDeg: 30,              // tamaño del hueco (grados)
+  spinSpeed: 1.0,         // velocidad de giro (rad/s), igual para todos
+  phaseStepDeg: 0.7,       // desfase entre anillos consecutivos (grados) -> cuña ligeramente curvada
+  // color
+  hueInner: 265,           // morado/azul en el centro
+  hueSpan: 140,            // hasta rojo/naranja en los exteriores
+  hueDrift: 22,            // grados/s que rota la paleta entera
+  glow: true,
+  // pelota
+  ballRadius: 5,
+  ballSpeed: 900,         // velocidad inicial (px/s, unidades de mundo)
+  speedGainPerRing: 1.014, // multiplicador por anillo roto
+  maxSpeed: 3400,
+  startOffset: 4,          // desplazamiento inicial desde el centro (evita rebote 100% radial)
+  bounceJitterDeg: 7,      // pequeña desviación aleatoria por rebote: rompe resonancias con
+                           // el giro de los huecos y crea cuerdas en estrella
+  substeps: 12,            // sub-pasos de física por frame
+  trailLength: 40,
+  // partículas
+  particlesPerRing: 320,
+  maxParticles: 4000,
+  particleLife: [1.0, 1.9],// segundos
+  particleSpeed: [90, 420],
+  gravity: 260,            // px/s² en pantalla
+  // cámara / encuadre
+  holeStart: 20,           // radio del hueco central al principio (= anillo más interno)
+  holeEndFrac: 0.38,       // radio del hueco cuando avanza la simulación (fracción del ancho)
+  holeGrowth: 1.6,         // qué tan rápido crece el hueco (multiplica el progreso)
+  slideEase: 7,            // velocidad (1/s) con la que los anillos se deslizan hacia dentro
+                           // tras romperse uno (mantiene la separación constante en pantalla)
+  // contador
+  counterFont: '900 112px "Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif',
+  // final
+  fadeOutTime: 1.6,
+  // grabación
+  videoBitrate: 16_000_000,
+};
+
+// ============================================================================
+// PRNG con semilla (mulberry32)
+// ============================================================================
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// ============================================================================
+// Estado
+// ============================================================================
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d", { alpha: false });
+const W = CONFIG.width, H = CONFIG.height, CX = W / 2, CY = H / 2;
+const TAU = Math.PI * 2;
+const GAP = CONFIG.gapDeg * Math.PI / 180;
+const PHASE = CONFIG.phaseStepDeg * Math.PI / 180;
+const DT = 1 / CONFIG.fps;
+
+let S = null;          // estado de la simulación
+let seed = 0;
+
+// radio actual del anillo i: los anillos vivos se deslizan hacia dentro tras cada
+// rotura, de modo que el hueco central tiene un tamaño agradable y la separación
+// entre anillos es siempre la misma en pantalla
+function holeRadius(ceff) {
+  const prog = Math.min(1, CONFIG.holeGrowth * ceff / CONFIG.rings);
+  const e = prog * prog * (3 - 2 * prog);
+  return CONFIG.holeStart + (CONFIG.holeEndFrac * W - CONFIG.holeStart) * e;
+}
+function ringRadius(i) {
+  return holeRadius(S.ceff) + (i - S.ceff) * CONFIG.ringSpacing;
+}
+
+function newSim(newSeed) {
+  seed = newSeed >>> 0;
+  const rnd = mulberry32(seed);
+  const dir = rnd() * TAU;
+  const offA = rnd() * TAU;
+  S = {
+    rnd,
+    t: 0,
+    rot0: rnd() * TAU,
+    current: 0,                          // primer anillo vivo
+    alive: CONFIG.rings,
+    ball: {
+      x: Math.cos(offA) * CONFIG.startOffset, y: Math.sin(offA) * CONFIG.startOffset,
+      vx: Math.cos(dir) * CONFIG.ballSpeed, vy: Math.sin(dir) * CONFIG.ballSpeed,
+      speed: CONFIG.ballSpeed, crossing: false,
+    },
+    trail: [],
+    batches: [],                         // partículas agrupadas por anillo
+    particleCount: 0,
+    zoom: 1,
+    ceff: 0,                             // índice "visual" del anillo interno (suavizado)
+    pop: 0,                              // animación del contador
+    flash: 0,
+    finished: false, finishT: 0,
+    lastBlip: -1,
+    lastCrash: -1,
+  };
+  updateInfo();
+}
+
+// ============================================================================
+// Anillos
+// ============================================================================
+function ringAngle(i, t) {               // ángulo del centro del hueco
+  return S.rot0 + CONFIG.spinSpeed * t + i * PHASE;
+}
+function wrapPi(a) { a = (a + Math.PI) % TAU; if (a < 0) a += TAU; return a - Math.PI; }
+function ringHue(i, t) {
+  return (CONFIG.hueInner + CONFIG.hueSpan * (i / CONFIG.rings) + CONFIG.hueDrift * t) % 360;
+}
+
+// ============================================================================
+// Física
+// ============================================================================
+function stepPhysics(dt) {
+  const b = S.ball;
+  const n = CONFIG.substeps, h = dt / n;
+  for (let k = 0; k < n; k++) {
+    const t = S.t + k * h;
+    b.x += b.vx * h; b.y += b.vy * h;
+    if (S.current >= CONFIG.rings) continue;       // libre al final
+    const R = ringRadius(S.current);
+    const d = Math.hypot(b.x, b.y);
+    const a = Math.atan2(b.y, b.x);
+    const inGap = Math.abs(wrapPi(a - ringAngle(S.current, t))) < GAP / 2 - (CONFIG.ballRadius / R) * 0.6;
+    if (b.crossing || (d + CONFIG.ballRadius >= R && inGap)) {
+      // atravesando el hueco
+      b.crossing = true;
+      if (d - CONFIG.ballRadius > R + CONFIG.ringWidth) breakRing(t);
+    } else if (d + CONFIG.ballRadius >= R) {
+      // rebote elástico sobre la normal radial
+      const nx = b.x / d, ny = b.y / d;
+      const vn = b.vx * nx + b.vy * ny;
+      if (vn > 0) {
+        b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny;
+        const j = (S.rnd() - 0.5) * 2 * CONFIG.bounceJitterDeg * Math.PI / 180;
+        const c = Math.cos(j), sn = Math.sin(j);
+        let vx = b.vx * c - b.vy * sn, vy = b.vx * sn + b.vy * c;
+        if (vx * nx + vy * ny > 0) { vx = b.vx; vy = b.vy; }   // nunca hacia fuera
+        b.vx = vx; b.vy = vy;
+        onBounce(S.current);
+        S.trail.push({ x: nx * (R - CONFIG.ballRadius), y: ny * (R - CONFIG.ballRadius) });
+      }
+      const rr = R - CONFIG.ballRadius - 1e-3;
+      b.x = nx * rr; b.y = ny * rr;
+    }
+  }
+  S.t += dt;
+}
+
+function breakRing(t) {
+  const i = S.current;
+  const R = ringRadius(i);
+  const hue = ringHue(i, t);
+  spawnRingParticles(i, R, hue, ringAngle(i, t), CONFIG.particlesPerRing);
+  S.current++;
+  S.alive = CONFIG.rings - S.current;
+  S.ball.crossing = false;
+  S.pop = 1;
+  // un poco más rápido cada vez
+  const b = S.ball;
+  b.speed = Math.min(CONFIG.maxSpeed, b.speed * CONFIG.speedGainPerRing);
+  const v = Math.hypot(b.vx, b.vy);
+  b.vx *= b.speed / v; b.vy *= b.speed / v;
+  onBreak(i);
+  if (S.alive === 0) finish();
+}
+
+function finish() {
+  // los últimos anillos ya rotos: gran explosión final y fundido
+  S.finished = true;
+  S.finishT = S.t;
+  S.flash = 1;
+  const R = ringRadius(CONFIG.rings - 1);
+  for (let k = 0; k < 4; k++)
+    spawnRingParticles(CONFIG.rings - 1, R * (0.7 + 0.12 * k), ringHue(CONFIG.rings - 1 - k * 20, S.t), null, 500, 1.8);
+  onFinale();
+}
+
+// ============================================================================
+// Partículas (por lotes: un color y una edad por lote -> pocas llamadas de estilo)
+// ============================================================================
+function spawnRingParticles(i, R, hue, gapAngle, count, speedMul = 1) {
+  const room = CONFIG.maxParticles - S.particleCount;
+  count = Math.min(count, Math.max(0, room));
+  if (count <= 0) return;
+  const rnd = S.rnd;
+  const x = new Float32Array(count), y = new Float32Array(count);
+  const vx = new Float32Array(count), vy = new Float32Array(count);
+  const [s0, s1] = CONFIG.particleSpeed;
+  for (let p = 0; p < count; p++) {
+    let a = rnd() * TAU;
+    if (gapAngle !== null) a = gapAngle + GAP / 2 + rnd() * (TAU - GAP); // solo el arco sólido
+    const rr = R + (rnd() - 0.5) * 2;
+    x[p] = Math.cos(a) * rr; y[p] = Math.sin(a) * rr;
+    const sp = (s0 + (s1 - s0) * rnd() * rnd()) * speedMul;
+    const ta = (rnd() - 0.5) * 0.9;                    // algo de dispersión tangencial
+    vx[p] = Math.cos(a + ta) * sp; vy[p] = Math.sin(a + ta) * sp;
+  }
+  const life = CONFIG.particleLife[0] + (CONFIG.particleLife[1] - CONFIG.particleLife[0]) * rnd();
+  S.batches.push({ x, y, vx, vy, n: count, age: 0, life, hue, zoomAtSpawn: S.zoom });
+  S.particleCount += count;
+}
+
+function stepParticles(dt) {
+  // gravedad hacia abajo en pantalla -> en mundo depende del zoom actual
+  const g = CONFIG.gravity / Math.max(S.zoom, 1e-3);
+  for (let bi = S.batches.length - 1; bi >= 0; bi--) {
+    const B = S.batches[bi];
+    B.age += dt;
+    if (B.age >= B.life) { S.particleCount -= B.n; S.batches.splice(bi, 1); continue; }
+    const drag = Math.exp(-0.8 * dt);
+    for (let p = 0; p < B.n; p++) {
+      B.vy[p] = B.vy[p] * drag + g * dt;
+      B.vx[p] *= drag;
+      B.x[p] += B.vx[p] * dt; B.y[p] += B.vy[p] * dt;
+    }
+  }
+}
+
+// ============================================================================
+// Cámara
+// ============================================================================
+function updateCamera(dt) {
+  // los anillos se deslizan hacia dentro (o el hueco crece) suavemente
+  const target = Math.min(S.current, CONFIG.rings - 1);
+  S.ceff += (target - S.ceff) * (1 - Math.exp(-CONFIG.slideEase * dt));
+  if (S.finished) S.zoom *= Math.exp(-0.25 * dt);   // ligera salida de cámara al final
+}
+
+// ============================================================================
+// Dibujo
+// ============================================================================
+function draw() {
+  const z = S.zoom, t = S.t;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  ctx.setTransform(z, 0, 0, z, CX, CY);
+  const maxR = Math.hypot(CX, CY) / z + 10;
+
+  // --- anillos (arcos sólidos = todo menos el hueco) ---
+  ctx.lineCap = "butt";
+  const lw = Math.max(CONFIG.ringWidth * Math.min(z, 1), 1.0) / z;
+  const glowPass = CONFIG.glow;
+  for (let pass = glowPass ? 0 : 1; pass < 2; pass++) {
+    ctx.lineWidth = pass === 0 ? lw * 3.2 : lw;
+    ctx.globalAlpha = pass === 0 ? 0.16 : 1;
+    for (let i = S.current; i < CONFIG.rings; i++) {
+      const R = ringRadius(i);
+      if (R > maxR) break;
+      if (R * z < 1.5) continue;
+      const a = ringAngle(i, t);
+      ctx.strokeStyle = `hsl(${ringHue(i, t)},100%,${pass === 0 ? 60 : 56}%)`;
+      ctx.beginPath();
+      ctx.arc(0, 0, R, a + GAP / 2, a - GAP / 2 + TAU);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // --- partículas ---
+  const ps = Math.max(1.6, 2.4 * Math.min(z, 1.5)) / z;
+  for (const B of S.batches) {
+    const k = 1 - B.age / B.life;
+    ctx.globalAlpha = Math.max(0, k * k);
+    ctx.fillStyle = `hsl(${B.hue},100%,62%)`;
+    for (let p = 0; p < B.n; p++) ctx.fillRect(B.x[p] - ps / 2, B.y[p] - ps / 2, ps, ps);
+  }
+  ctx.globalAlpha = 1;
+
+  // --- estela ---
+  const tr = S.trail, nT = tr.length;
+  const headHue = (t * 140) % 360;
+  if (nT > 1) {
+    ctx.lineCap = "round";
+    ctx.globalCompositeOperation = "lighter";
+    for (let pass = 0; pass < 2; pass++) {
+      for (let j = 1; j < nT; j++) {
+        const f = j / (nT - 1);                     // 0 cola -> 1 cabeza
+        const hue = (headHue - (1 - f) * 70 + 360) % 360;
+        ctx.globalAlpha = pass === 0 ? f * 0.22 : f * f * 0.95;
+        ctx.lineWidth = (pass === 0 ? 6 + 18 * f : 2 + 7 * f) / z;
+        ctx.strokeStyle = `hsl(${hue},100%,${pass === 0 ? 55 : 60 + 25 * f}%)`;
+        ctx.beginPath();
+        ctx.moveTo(tr[j - 1].x, tr[j - 1].y);
+        ctx.lineTo(tr[j].x, tr[j].y);
+        ctx.stroke();
+      }
+    }
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+  }
+
+  // --- pelota ---
+  const b = S.ball;
+  ctx.fillStyle = `hsl(${headHue},100%,80%)`;
+  ctx.shadowColor = `hsl(${headHue},100%,60%)`;
+  ctx.shadowBlur = 18;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, Math.max(CONFIG.ballRadius, 3 / z), 0, TAU);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // --- contador ---
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const sc = 1 + 0.15 * S.pop;
+  ctx.save();
+  ctx.translate(CX, CY);
+  ctx.scale(sc, sc);
+  ctx.font = CONFIG.counterFont;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(0,0,0,.85)";
+  ctx.shadowBlur = 24;
+  ctx.shadowOffsetY = 4;
+  ctx.fillStyle = "#fff";
+  ctx.fillText(String(S.alive), 0, 4);
+  ctx.restore();
+
+  // --- flash / fundido final ---
+  if (S.flash > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${S.flash * 0.35})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  if (S.finished) {
+    const k = Math.min(1, Math.max(0, (S.t - S.finishT - 1.2) / CONFIG.fadeOutTime));
+    if (k > 0) { ctx.fillStyle = `rgba(0,0,0,${k})`; ctx.fillRect(0, 0, W, H); }
+  }
+}
+
+// ============================================================================
+// Bucle principal (paso fijo -> misma semilla = misma simulación)
+// ============================================================================
+let acc = 0, last = 0, running = false;
+function frame(now) {
+  if (!running) return;
+  const elapsed = Math.min(0.1, (now - last) / 1000 || DT);
+  last = now;
+  acc += elapsed;
+  let steps = 0;
+  while (acc >= DT && steps < 4) {
+    tick(DT);
+    acc -= DT; steps++;
+  }
+  if (steps === 4) acc = 0;
+  draw();
+  requestAnimationFrame(frame);
+}
+
+function tick(dt) {
+  stepPhysics(dt);
+  // estela: posiciones por frame (+ puntos de rebote insertados en la física)
+  S.trail.push({ x: S.ball.x, y: S.ball.y });
+  while (S.trail.length > CONFIG.trailLength) S.trail.shift();
+  stepParticles(dt);
+  updateCamera(dt);
+  S.pop = Math.max(0, S.pop - dt * 6);
+  S.flash = Math.max(0, S.flash - dt * 2.5);
+  if (S.finished && rec && S.t - S.finishT > 1.2 + CONFIG.fadeOutTime + 0.4) stopRecording();
+}
+
+// ============================================================================
+// Sonido (Web Audio)
+// ============================================================================
+let AC = null, master = null, recDest = null, noiseBuf = null, muted = false;
+const PENTA = [0, 2, 4, 7, 9];
+function initAudio() {
+  if (AC) return;
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  master = AC.createGain();
+  master.gain.value = 0.55;
+  const comp = AC.createDynamicsCompressor();
+  comp.threshold.value = -14; comp.ratio.value = 4;
+  master.connect(comp);
+  comp.connect(AC.destination);
+  recDest = AC.createMediaStreamDestination();
+  comp.connect(recDest);
+  noiseBuf = AC.createBuffer(1, AC.sampleRate * 1.2, AC.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  const r = mulberry32(12345);
+  for (let i = 0; i < d.length; i++) d[i] = r() * 2 - 1;
+}
+function onBounce(ring) {
+  if (!AC || muted) return;
+  const now = AC.currentTime;
+  if (now - S.lastBlip < 0.025) return;            // limita la densidad de blips
+  S.lastBlip = now;
+  const step = ring % 15;
+  const note = PENTA[step % 5] + 12 * Math.floor(step / 5);
+  const f = 392 * Math.pow(2, note / 12);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = "triangle";
+  o.frequency.value = f;
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.32, now + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+  o.connect(g); g.connect(master);
+  o.start(now); o.stop(now + 0.14);
+}
+function onBreak(ring) {
+  if (!AC || muted) return;
+  const now = AC.currentTime;
+  if (now - S.lastCrash < 0.07) return;            // ráfagas: un solo crash cada 70 ms
+  S.lastCrash = now;
+  const src = AC.createBufferSource();
+  src.buffer = noiseBuf;
+  const lp = AC.createBiquadFilter();
+  lp.type = "lowpass";
+  lp.frequency.setValueAtTime(2600, now);
+  lp.frequency.exponentialRampToValueAtTime(180, now + 0.45);
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.5, now + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+  src.connect(lp); lp.connect(g); g.connect(master);
+  src.start(now, Math.random() * 0.5); src.stop(now + 0.6);
+  // golpe grave
+  const o = AC.createOscillator(), og = AC.createGain();
+  o.type = "sine";
+  o.frequency.setValueAtTime(120, now);
+  o.frequency.exponentialRampToValueAtTime(45, now + 0.25);
+  og.gain.setValueAtTime(0.4, now);
+  og.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
+  o.connect(og); og.connect(master);
+  o.start(now); o.stop(now + 0.32);
+}
+function onFinale() {
+  if (!AC || muted) return;
+  for (let k = 0; k < 3; k++) setTimeout(() => { S.lastCrash = -1; onBreak(0); }, k * 90);
+}
+
+// ============================================================================
+// Grabación (MediaRecorder: canvas + audio -> .webm 1080x1920)
+// ============================================================================
+let rec = null, chunks = [];
+function startRecording() {
+  initAudio();
+  const vs = cv.captureStream(CONFIG.fps);
+  const tracks = [...vs.getVideoTracks()];
+  if (recDest) tracks.push(...recDest.stream.getAudioTracks());
+  const stream = new MediaStream(tracks);
+  const types = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  const mimeType = types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  chunks = [];
+  rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: CONFIG.videoBitrate });
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    const blob = new Blob(chunks, { type: "video/webm" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `ring-escape-seed${seed}.webm`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    rec = null; updateInfo();
+  };
+  // empieza la grabación con una simulación nueva desde 0 (misma semilla)
+  newSim(seed);
+  rec.start(250);
+  updateInfo();
+}
+function stopRecording() { if (rec && rec.state !== "inactive") rec.stop(); }
+
+// ============================================================================
+// UI
+// ============================================================================
+const $ = id => document.getElementById(id);
+function updateInfo() {
+  $("info").textContent = `semilla ${seed}` + (rec ? "  ·  ● grabando" : "");
+  $("bRec").textContent = rec ? "■ Parar (G)" : "● Grabar (G)";
+  $("bRec").classList.toggle("rec", !!rec);
+}
+function restart() {
+  newSim((Math.random() * 2 ** 32) >>> 0);
+  history.replaceState(null, "", `?seed=${seed}`);
+}
+function toggleRec() { rec ? stopRecording() : startRecording(); }
+function begin() {
+  if (running) return;
+  $("start").remove();
+  initAudio();
+  if (AC.state === "suspended") AC.resume();
+  running = true; last = performance.now();
+  requestAnimationFrame(frame);
+}
+$("start").addEventListener("pointerdown", begin);
+$("bRestart").onclick = () => { begin(); restart(); };
+$("bRec").onclick = () => { begin(); toggleRec(); };
+$("bMute").onclick = () => { muted = !muted; $("bMute").textContent = `Sonido: ${muted ? "no" : "sí"} (M)`; };
+$("bHide").onclick = () => $("ui").classList.toggle("hidden");
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (!running) begin();
+  if (k === "r") restart();
+  else if (k === "g") toggleRec();
+  else if (k === "m") $("bMute").click();
+  else if (k === "h") $("bHide").click();
+});
+
+// semilla desde la URL (?seed=123) para repetir una simulación que salió bien
+const qs = new URLSearchParams(location.search);
+newSim(qs.has("seed") ? Number(qs.get("seed")) : (Math.random() * 2 ** 32) >>> 0);
+draw();
+// para pruebas automáticas: ?auto=1 arranca sin interacción (sin audio)
+if (qs.get("auto") === "1") { $("start").remove(); running = true; last = performance.now(); requestAnimationFrame(frame); }
+window.__sim = () => S; window.__tick = tick; window.__draw = draw;
+</script>
+</body>
+</html>
