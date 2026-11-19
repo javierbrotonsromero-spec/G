@@ -185,6 +185,13 @@ class Machine:
                 for i, b in enumerate(bodies):
                     b.x = q @ rot[i][0].T + paths[i][0]
                     b.tether = 0.09 - 0.05 * s_
+                    if rings:  # each piece has its own ring and hole
+                        for j in range(self.n):
+                            if j != i:
+                                ci, cj = self.ring_xy(i), self.ring_xy(j)
+                                nrm = np.array([*(ci - cj), 0.0])
+                                nrm /= np.linalg.norm(nrm)
+                                b.walls.append((np.array([*((ci + cj) / 2), 0.0]), nrm))
                 for lf in range(nf):
                     f = si * self.frames_per_step + lf
                     out_pos[f] = [b.x.astype(np.float32).copy() if b.alive else None for b in bodies]
@@ -195,7 +202,8 @@ class Machine:
                             for bi, b in enumerate(bodies):
                                 fz, fk = self.funnels[bi][kk]
                                 b.funnel = None if np.isnan(fz) else (*self.ring_xy(bi), fz, fk)
-                        step_all(bodies, dt, world, kk * dt, targets=[p[kk] for p in paths])
+                        step_all(bodies, dt, world, kk * dt, targets=[p[kk] for p in paths],
+                                 pairs=not rings)
                         for bi, b in enumerate(bodies):
                             fi[bi] = max(fi[bi], b.impact)
                     out_imp[f] = fi

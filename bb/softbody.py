@@ -50,6 +50,7 @@ class SoftBody:
         self.radius = float(np.linalg.norm(self.q, axis=1).max())
         self.max_stretch = 2.3
         self.funnel = None   # (axis_x, axis_y, plane_z, strength) while squeezing
+        self.walls = []      # half-spaces (point, normal) the piece must stay in
 
     # ------------------------------------------------------------------
     def volume(self, x):
@@ -170,6 +171,13 @@ class SoftBody:
                 w = np.exp(-np.maximum(h[m], 0.0) / (0.6 * self.radius))
                 x[m, 0] -= k * w * (x[m, 0] - ax)
                 x[m, 1] -= k * w * (x[m, 1] - ay)
+        for pt, nrm in self.walls:
+            # invisible separators between neighbouring pieces: touching
+            # puddles flatten against each other instead of piling up
+            d = (x - pt) @ nrm
+            m = d < 0.004
+            if m.any():
+                x[m] += (0.004 - d[m])[:, None] * nrm
         if not rigid:
             # long-range stretch limit: no part of the piece may drift further
             # than max_stretch radii from its centre (Jacobi edge constraints
@@ -331,7 +339,7 @@ def collide_pair(A, B, th=0.012):
         Q.pair_n.append(-d[hit])
 
 
-def step_all(bodies, dt, world, t, gravity=-9.81, iters=3, targets=None):
+def step_all(bodies, dt, world, t, gravity=-9.81, iters=3, targets=None, pairs=True):
     if targets is not None:
         for b, tg in zip(bodies, targets):
             b.target = tg
@@ -340,9 +348,10 @@ def step_all(bodies, dt, world, t, gravity=-9.81, iters=3, targets=None):
         b.begin(dt, gravity)
     for it in range(iters):
         last = it == iters - 1
-        for i in range(len(live)):
-            for j in range(i + 1, len(live)):
-                collide_pair(live[i], live[j])
+        if pairs:
+            for i in range(len(live)):
+                for j in range(i + 1, len(live)):
+                    collide_pair(live[i], live[j])
         for b in live:
             b.solve(world, t, last)
     for b in live:

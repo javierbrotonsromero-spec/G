@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Watchdog: keeps a long render alive. Relaunches the frame ranges whenever
 # their process is gone (finished frames are skipped) and encodes at the end.
-#   tools/keep_rendering.sh configs/soft_gold.yaml 2   # 2 parallel workers
+#   tools/keep_rendering.sh configs/soft_gold.yaml 2      # 2 parallel workers
+#   tools/keep_rendering.sh configs/soft_gold.yaml 2 168  # only frames 168.. (re-render)
 set -u
 cd "$(dirname "$0")/.."
 CFG=${1:-configs/soft_gold.yaml}
 WORKERS=${2:-2}
+START=${3:-0}
 NAME=$(python3 -c "import sys;sys.path.insert(0,'.');from bb import config;print(config.load('$CFG')['name'])")
 TOTAL=$(python3 -c "import sys;sys.path.insert(0,'.');from bb import config;from bb.machine import Machine;print(Machine(config.load('$CFG')).total_frames)")
 THREADS=$(( $(nproc) / WORKERS )); [ "$THREADS" -lt 1 ] && THREADS=1
-CHUNK=$(( (TOTAL + WORKERS - 1) / WORKERS ))
+CHUNK=$(( (TOTAL - START + WORKERS - 1) / WORKERS ))
 while true; do
   DONE=$(ls "work/$NAME/frames" 2>/dev/null | wc -l)
   if [ "$DONE" -ge "$TOTAL" ]; then
@@ -20,7 +22,7 @@ while true; do
     fi
   else
     for ((w=0; w<WORKERS; w++)); do
-      A=$(( w * CHUNK )); B=$(( A + CHUNK )); [ "$B" -gt "$TOTAL" ] && B=$TOTAL
+      A=$(( START + w * CHUNK )); B=$(( A + CHUNK )); [ "$B" -gt "$TOTAL" ] && B=$TOTAL
       if ! pgrep -f "render.py $CFG --frames $A:$B" >/dev/null; then
         echo "$(date -u) launch $A:$B ($DONE/$TOTAL done)" >> "work_${NAME}_watchdog.log"
         nohup setsid python3 render.py "$CFG" --frames $A:$B --threads $THREADS \
