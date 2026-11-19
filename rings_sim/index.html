@@ -70,6 +70,9 @@ const CONFIG = {
   particleSpeed: [90, 420],
   gravity: 260,            // px/s² en pantalla
   // cámara / encuadre
+  cameraZoom: 1.0,         // >1 = cámara más cerca (anillos más separados y gruesos en pantalla).
+                           // La física se escala para que el ritmo y el tamaño del hueco no cambien.
+                           // También con la URL: index.html?zoom=1.9
   holeStart: 20,           // radio del hueco central al principio (= anillo más interno)
   holeEndFrac: 0.38,       // radio del hueco cuando avanza la simulación (fracción del ancho)
   holeGrowth: 1.6,         // qué tan rápido crece el hueco (multiplica el progreso)
@@ -82,6 +85,11 @@ const CONFIG = {
   // grabación
   videoBitrate: 16_000_000,
 };
+
+{ const z = Number(new URLSearchParams(location.search).get("zoom"));
+  if (z > 0) CONFIG.cameraZoom = z; }
+const CZ = CONFIG.cameraZoom;                    // escala mundo -> pantalla de la cámara
+const BALL_R = CONFIG.ballRadius / Math.sqrt(CZ); // la pelota crece algo en pantalla con el zoom
 
 // ============================================================================
 // PRNG con semilla (mulberry32)
@@ -115,7 +123,7 @@ let seed = 0;
 function holeRadius(ceff) {
   const prog = Math.min(1, CONFIG.holeGrowth * ceff / CONFIG.rings);
   const e = prog * prog * (3 - 2 * prog);
-  return CONFIG.holeStart + (CONFIG.holeEndFrac * W - CONFIG.holeStart) * e;
+  return CONFIG.holeStart + (CONFIG.holeEndFrac * W / CZ - CONFIG.holeStart) * e;
 }
 function ringRadius(i) {
   return holeRadius(S.ceff) + (i - S.ceff) * CONFIG.ringSpacing;
@@ -134,8 +142,8 @@ function newSim(newSeed) {
     alive: CONFIG.rings,
     ball: {
       x: Math.cos(offA) * CONFIG.startOffset, y: Math.sin(offA) * CONFIG.startOffset,
-      vx: Math.cos(dir) * CONFIG.ballSpeed, vy: Math.sin(dir) * CONFIG.ballSpeed,
-      speed: CONFIG.ballSpeed, crossing: false,
+      vx: Math.cos(dir) * CONFIG.ballSpeed / CZ, vy: Math.sin(dir) * CONFIG.ballSpeed / CZ,
+      speed: CONFIG.ballSpeed / CZ, crossing: false,
     },
     trail: [],
     batches: [],                         // partículas agrupadas por anillo
@@ -175,12 +183,12 @@ function stepPhysics(dt) {
     const R = ringRadius(S.current);
     const d = Math.hypot(b.x, b.y);
     const a = Math.atan2(b.y, b.x);
-    const inGap = Math.abs(wrapPi(a - ringAngle(S.current, t))) < GAP / 2 - (CONFIG.ballRadius / R) * 0.6;
-    if (b.crossing || (d + CONFIG.ballRadius >= R && inGap)) {
+    const inGap = Math.abs(wrapPi(a - ringAngle(S.current, t))) < GAP / 2 - (BALL_R / R) * 0.6;
+    if (b.crossing || (d + BALL_R >= R && inGap)) {
       // atravesando el hueco
       b.crossing = true;
-      if (d - CONFIG.ballRadius > R + CONFIG.ringWidth) breakRing(t);
-    } else if (d + CONFIG.ballRadius >= R) {
+      if (d - BALL_R > R + CONFIG.ringWidth) breakRing(t);
+    } else if (d + BALL_R >= R) {
       // rebote elástico sobre la normal radial
       const nx = b.x / d, ny = b.y / d;
       const vn = b.vx * nx + b.vy * ny;
@@ -192,9 +200,9 @@ function stepPhysics(dt) {
         if (vx * nx + vy * ny > 0) { vx = b.vx; vy = b.vy; }   // nunca hacia fuera
         b.vx = vx; b.vy = vy;
         onBounce(S.current);
-        S.trail.push({ x: nx * (R - CONFIG.ballRadius), y: ny * (R - CONFIG.ballRadius) });
+        S.trail.push({ x: nx * (R - BALL_R), y: ny * (R - BALL_R) });
       }
-      const rr = R - CONFIG.ballRadius - 1e-3;
+      const rr = R - BALL_R - 1e-3;
       b.x = nx * rr; b.y = ny * rr;
     }
   }
@@ -212,7 +220,7 @@ function breakRing(t) {
   S.pop = 1;
   // un poco más rápido cada vez
   const b = S.ball;
-  b.speed = Math.min(CONFIG.maxSpeed, b.speed * CONFIG.speedGainPerRing);
+  b.speed = Math.min(CONFIG.maxSpeed / CZ, b.speed * CONFIG.speedGainPerRing);
   const v = Math.hypot(b.vx, b.vy);
   b.vx *= b.speed / v; b.vy *= b.speed / v;
   onBreak(i);
@@ -240,7 +248,7 @@ function spawnRingParticles(i, R, hue, gapAngle, count, speedMul = 1) {
   const rnd = S.rnd;
   const x = new Float32Array(count), y = new Float32Array(count);
   const vx = new Float32Array(count), vy = new Float32Array(count);
-  const [s0, s1] = CONFIG.particleSpeed;
+  const s0 = CONFIG.particleSpeed[0] / CZ, s1 = CONFIG.particleSpeed[1] / CZ;
   for (let p = 0; p < count; p++) {
     let a = rnd() * TAU;
     if (gapAngle !== null) a = gapAngle + GAP / 2 + rnd() * (TAU - GAP); // solo el arco sólido
@@ -257,7 +265,7 @@ function spawnRingParticles(i, R, hue, gapAngle, count, speedMul = 1) {
 
 function stepParticles(dt) {
   // gravedad hacia abajo en pantalla -> en mundo depende del zoom actual
-  const g = CONFIG.gravity / Math.max(S.zoom, 1e-3);
+  const g = CONFIG.gravity / Math.max(S.zoom * CZ, 1e-3);
   for (let bi = S.batches.length - 1; bi >= 0; bi--) {
     const B = S.batches[bi];
     B.age += dt;
@@ -285,7 +293,7 @@ function updateCamera(dt) {
 // Dibujo
 // ============================================================================
 function draw() {
-  const z = S.zoom, t = S.t;
+  const z = S.zoom * CZ, t = S.t;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
@@ -294,7 +302,7 @@ function draw() {
 
   // --- anillos (arcos sólidos = todo menos el hueco) ---
   ctx.lineCap = "butt";
-  const lw = Math.max(CONFIG.ringWidth * Math.min(z, 1), 1.0) / z;
+  const lw = Math.max(CONFIG.ringWidth * Math.min(z, 1) * Math.pow(Math.max(CZ, 1), 0.6), 1.0) / z;
   const glowPass = CONFIG.glow;
   for (let pass = glowPass ? 0 : 1; pass < 2; pass++) {
     ctx.lineWidth = pass === 0 ? lw * 3.2 : lw;
@@ -313,7 +321,7 @@ function draw() {
   ctx.globalAlpha = 1;
 
   // --- partículas ---
-  const ps = Math.max(1.6, 2.4 * Math.min(z, 1.5)) / z;
+  const ps = Math.max(1.6, 2.4 * Math.min(z, 1.5) * Math.sqrt(Math.max(CZ, 1))) / z;
   for (const B of S.batches) {
     const k = 1 - B.age / B.life;
     ctx.globalAlpha = Math.max(0, k * k);
@@ -351,7 +359,7 @@ function draw() {
   ctx.shadowColor = `hsl(${headHue},100%,60%)`;
   ctx.shadowBlur = 18;
   ctx.beginPath();
-  ctx.arc(b.x, b.y, Math.max(CONFIG.ballRadius, 3 / z), 0, TAU);
+  ctx.arc(b.x, b.y, Math.max(BALL_R, 3 / z), 0, TAU);
   ctx.fill();
   ctx.shadowBlur = 0;
 
