@@ -100,6 +100,8 @@ const CONFIG = {
   comboMin: 3,
   milestones: [100, 50, 25, 10, 3, 1],
   tensionRings: 5,         // viñeta roja con latido cuando quedan estos anillos
+  texts: false,            // textos superpuestos (gancho, combos, hitos, "ESCAPE %"); ?text=1
+  ballColorPerBounce: true,// la bola cambia de color en cada rebote
   // grabación
   videoBitrate: 16_000_000,
 };
@@ -108,6 +110,7 @@ const CONFIG = {
   const z = Number(q.get("zoom"));
   if (z > 0) CONFIG.cameraZoom = z;
   if (q.get("loop") === "1") CONFIG.loopMode = true;
+  if (q.get("text") === "1") CONFIG.texts = true;
   if (q.get("show") === "1") {
     CONFIG.showMode = true; CONFIG.loopMode = true;
     CONFIG.hookTitle = "¿LLEGARÁ A 0?"; CONFIG.hookSub = "no parpadees";
@@ -191,7 +194,9 @@ function newSim(newSeed) {
     lastBlip: -1,
     lastCrash: -1,
   };
-  S.start = { x: S.ball.x, y: S.ball.y, vx: S.ball.vx, vy: S.ball.vy };
+  S.ballHue = (seed * 137.508) % 360;      // color actual de la bola (sin tocar el PRNG)
+  S.ballFlash = 0;
+  S.start = { x: S.ball.x, y: S.ball.y, vx: S.ball.vx, vy: S.ball.vy, hue: S.ballHue };
   updateInfo();
 }
 
@@ -236,7 +241,8 @@ function stepPhysics(dt) {
         if (vx * nx + vy * ny > 0) { vx = b.vx; vy = b.vy; }   // nunca hacia fuera
         b.vx = vx; b.vy = vy;
         onBounce(S.current);
-        S.trail.push({ x: nx * (R - BALL_R), y: ny * (R - BALL_R) });
+        S.trail.push({ x: nx * (R - BALL_R), y: ny * (R - BALL_R), h: S.ballHue });
+        if (CONFIG.ballColorPerBounce) { S.ballHue = (S.ballHue + 137.508) % 360; S.ballFlash = 1; }
       }
       const rr = R - BALL_R - 1e-3;
       b.x = nx * rr; b.y = ny * rr;
@@ -412,14 +418,14 @@ function draw() {
 
   // --- estela ---
   const tr = S.trail, nT = tr.length;
-  const headHue = ((S.te * 140) % 360 + 360) % 360;
+  const headHue = CONFIG.ballColorPerBounce ? S.ballHue : ((S.te * 140) % 360 + 360) % 360;
   if (nT > 1) {
     ctx.lineCap = "round";
     ctx.globalCompositeOperation = "lighter";
     for (let pass = 0; pass < 2; pass++) {
       for (let j = 1; j < nT; j++) {
         const f = j / (nT - 1);                     // 0 cola -> 1 cabeza
-        const hue = (headHue - (1 - f) * 70 + 360) % 360;
+        const hue = CONFIG.ballColorPerBounce ? (tr[j].h ?? headHue) : (headHue - (1 - f) * 70 + 360) % 360;
         ctx.globalAlpha = pass === 0 ? f * 0.22 : f * f * 0.95;
         ctx.lineWidth = (pass === 0 ? 6 + 18 * f : 2 + 7 * f) / z;
         ctx.strokeStyle = `hsl(${hue},100%,${pass === 0 ? 55 : 60 + 25 * f}%)`;
@@ -435,11 +441,12 @@ function draw() {
 
   // --- pelota ---
   const b = S.ball;
-  ctx.fillStyle = `hsl(${headHue},100%,80%)`;
+  const fl = S.ballFlash || 0;
+  ctx.fillStyle = `hsl(${headHue},100%,${72 + 20 * fl}%)`;
   ctx.shadowColor = `hsl(${headHue},100%,60%)`;
-  ctx.shadowBlur = 18;
+  ctx.shadowBlur = 18 + 30 * fl;
   ctx.beginPath();
-  ctx.arc(b.x, b.y, Math.max(BALL_R, 3 / z), 0, TAU);
+  ctx.arc(b.x, b.y, Math.max(BALL_R, 3 / z) * (1 + 0.7 * fl), 0, TAU);
   ctx.fill();
   ctx.shadowBlur = 0;
 
@@ -463,7 +470,7 @@ function draw() {
   if (CONFIG.showMode) drawShow();
 
   // --- gancho (modo bucle) ---
-  if (CONFIG.loopMode) drawHook();
+  if (CONFIG.loopMode && CONFIG.texts) drawHook();
 
   // --- flash / fundido final ---
   if (S.flash > 0) {
@@ -490,7 +497,7 @@ function drawShow() {
   const prog = (CONFIG.rings - S.alive) / CONFIG.rings;
   const bw = 720, bh = 16, bx = CX - bw / 2, by = H * 0.885;
   ctx.save();
-  ctx.globalAlpha = 0.9 * (1 - hookAlpha() * 0.6);
+  ctx.globalAlpha = 0.9 * (CONFIG.texts ? 1 - hookAlpha() * 0.6 : 1);
   ctx.fillStyle = "rgba(255,255,255,0.14)";
   roundRect(bx, by, bw, bh, 8); ctx.fill();
   if (prog > 0) {
@@ -506,10 +513,10 @@ function drawShow() {
   ctx.font = '800 34px "Montserrat", "Arial Black", Arial, sans-serif';
   ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
   ctx.fillStyle = "rgba(255,255,255,.92)";
-  ctx.fillText(`ESCAPE ${Math.round(prog * 100)}%`, CX, by - 18);
+  if (CONFIG.texts) ctx.fillText(`ESCAPE ${Math.round(prog * 100)}%`, CX, by - 18);
   ctx.restore();
   // textos flotantes
-  for (const p of S.popups) {
+  if (CONFIG.texts) for (const p of S.popups) {
     const a = (S.t - p.t0) / p.life;
     const pop = a < 0.12 ? 0.6 + 0.6 * (a / 0.12) : 1.2 - 0.2 * Math.min(1, (a - 0.12) / 0.2);
     const alpha = a > 0.7 ? (1 - a) / 0.3 : 1;
@@ -595,8 +602,9 @@ function tick(dt) {
   stepPhysics(sdt);
   S.te = S.t;
   // estela: posiciones por frame (+ puntos de rebote insertados en la física)
-  S.trail.push({ x: S.ball.x, y: S.ball.y });
+  S.trail.push({ x: S.ball.x, y: S.ball.y, h: S.ballHue });
   while (S.trail.length > CONFIG.trailLength) S.trail.shift();
+  S.ballFlash = Math.max(0, S.ballFlash - dt * 7);
   stepParticles(sdt);
   updateCamera(sdt);
   S.pop = Math.max(0, S.pop - dt * 6);
@@ -640,7 +648,7 @@ function stepRewind(dt) {
   // la pelota vuelve a su posición inicial
   S.ball.x = R.bx + (S.start.x - R.bx) * e;
   S.ball.y = R.by + (S.start.y - R.by) * e;
-  S.trail.push({ x: S.ball.x, y: S.ball.y });
+  S.trail.push({ x: S.ball.x, y: S.ball.y, h: S.ballHue });
   while (S.trail.length > 14) S.trail.shift();
   S.zoom += (1 - S.zoom) * (1 - Math.exp(-8 * dt));
   S.kick *= Math.exp(-7 * dt);
@@ -653,6 +661,7 @@ function stepRewind(dt) {
     // estado final = estado inicial
     S.current = 0; S.alive = CONFIG.rings; S.ceff = 0; S.te = 0; S.zoom = 1; S.kick = 0;
     S.ball.x = S.start.x; S.ball.y = S.start.y; S.trail = [];
+    S.ballHue = S.start.hue; S.ballFlash = 0;
     S.pop = 0; S.flash = 0;
     S.popups = []; S.shocks = []; S.shake = 0; S.combo = 0;
     S.loopDone = true;

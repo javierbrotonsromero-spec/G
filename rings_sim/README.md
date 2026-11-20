@@ -34,6 +34,10 @@ Mecánicas para retener al espectador:
 - **Tensión final**: viñeta roja que late con sonido de corazón en los últimos 5 anillos.
 - Gancho "¿LLEGARÁ A 0? / NO PARPADEES".
 
+Por defecto **sin textos** (solo el contador): `?text=1` activa el gancho, los combos, los hitos
+y "ESCAPE %". La bola **cambia de color en cada rebote** (con destello) y cada tramo de la estela
+conserva su color (`ballColorPerBounce` en CONFIG).
+
 Ejemplo del vídeo: `index.html?show=1&zoom=4.5&seed=151`. En el vídeo renderizado se añade además
 una base musical (bombo, hi-hat y bajo) con el tempo ajustado para que el audio también empalme en
 el bucle; en la página en vivo suenan solo los efectos.
