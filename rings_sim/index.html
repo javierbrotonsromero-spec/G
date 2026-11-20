@@ -94,6 +94,12 @@ const CONFIG = {
   slowmoScale: 0.38,
   rewindDelay: 0.9,        // tras la explosión final
   rewindTime: 1.7,
+  // modo show (?show=1, incluye el bucle): combos, hitos, barra de progreso y tensión final
+  showMode: false,
+  comboWindow: 0.35,       // s entre roturas para encadenar un combo
+  comboMin: 3,
+  milestones: [100, 50, 25, 10, 3, 1],
+  tensionRings: 5,         // viñeta roja con latido cuando quedan estos anillos
   // grabación
   videoBitrate: 16_000_000,
 };
@@ -101,7 +107,11 @@ const CONFIG = {
 { const q = new URLSearchParams(location.search);
   const z = Number(q.get("zoom"));
   if (z > 0) CONFIG.cameraZoom = z;
-  if (q.get("loop") === "1") CONFIG.loopMode = true; }
+  if (q.get("loop") === "1") CONFIG.loopMode = true;
+  if (q.get("show") === "1") {
+    CONFIG.showMode = true; CONFIG.loopMode = true;
+    CONFIG.hookTitle = "¿LLEGARÁ A 0?"; CONFIG.hookSub = "no parpadees";
+  } }
 const CZ = CONFIG.cameraZoom;                    // escala mundo -> pantalla de la cámara
 const BALL_R = CONFIG.ballRadius / Math.sqrt(CZ); // la pelota crece algo en pantalla con el zoom
 
@@ -172,6 +182,11 @@ function newSim(newSeed) {
     te: 0,                               // tiempo "visual" de giro/color (se rebobina en el bucle)
     rewind: null,                        // estado del rebobinado final
     loopDone: false,
+    combo: 0, comboT: -9,                // racha de roturas
+    popups: [],                          // textos flotantes (combos, hitos)
+    shocks: [],                          // ondas expansivas
+    shake: 0,
+    lastBeat: -1,
     start: null,
     lastBlip: -1,
     lastCrash: -1,
@@ -243,6 +258,7 @@ function breakRing(t) {
     S.kick = Math.min(CONFIG.kickMax, S.kick + CONFIG.kickPerRing);
     S.flash = Math.max(S.flash, 0.18);
   }
+  if (CONFIG.showMode) showOnBreak(i, R, t);
   // un poco más rápido cada vez
   const b = S.ball;
   b.speed = Math.min(CONFIG.maxSpeed / CZ, b.speed * CONFIG.speedGainPerRing);
@@ -250,6 +266,29 @@ function breakRing(t) {
   b.vx *= b.speed / v; b.vy *= b.speed / v;
   onBreak(i);
   if (S.alive === 0) finish();
+}
+
+function showOnBreak(i, R, t) {
+  // combos
+  S.combo = (S.t - S.comboT < CONFIG.comboWindow) ? S.combo + 1 : 1;
+  S.comboT = S.t;
+  if (S.combo >= CONFIG.comboMin) {
+    const mega = S.combo >= 10;
+    const txt = (mega ? "MEGA COMBO x" : "COMBO x") + S.combo;
+    const last = S.popups.find(p => p.kind === "combo" && S.t - p.t0 < 1.0);
+    if (last) { last.text = txt; last.t0 = S.t; last.mega = mega; }
+    else S.popups.push({ kind: "combo", text: txt, t0: S.t, life: 1.1, mega });
+    onCombo(S.combo);
+  }
+  // hitos
+  if (CONFIG.milestones.includes(S.alive)) {
+    S.popups = S.popups.filter(p => p.kind !== "mile");
+    S.popups.push({ kind: "mile", text: S.alive === 1 ? "¡ÚLTIMO!" : `¡QUEDAN ${S.alive}!`, t0: S.t, life: 1.4 });
+    S.shocks.push({ r: R, t0: S.t });
+    S.shake = 1;
+    S.flash = Math.max(S.flash, 0.45);
+    onMilestone(S.alive);
+  }
 }
 
 function finish() {
@@ -322,7 +361,11 @@ function draw() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
-  ctx.setTransform(z, 0, 0, z, CX, CY);
+  let sx = 0, sy = 0;
+  if (CONFIG.showMode && S.shake > 0.01) {            // temblor determinista
+    sx = Math.sin(S.t * 91.7) * 16 * S.shake; sy = Math.cos(S.t * 77.3) * 16 * S.shake;
+  }
+  ctx.setTransform(z, 0, 0, z, CX + sx, CY + sy);
   const maxR = Math.hypot(CX, CY) / z + 10;
 
   // --- anillos (arcos sólidos = todo menos el hueco) ---
@@ -342,6 +385,18 @@ function draw() {
       ctx.arc(0, 0, R, a + GAP / 2, a - GAP / 2 + TAU);
       ctx.stroke();
     }
+  }
+  ctx.globalAlpha = 1;
+
+  // --- ondas expansivas (hitos) ---
+  if (CONFIG.showMode) for (const k of S.shocks) {
+    const a = (S.t - k.t0) / 0.9;
+    ctx.globalAlpha = (1 - a) * 0.9;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = (18 * (1 - a) + 2) / z;
+    ctx.beginPath();
+    ctx.arc(0, 0, k.r + (W * 0.9 / z) * a, 0, TAU);
+    ctx.stroke();
   }
   ctx.globalAlpha = 1;
 
@@ -404,6 +459,9 @@ function draw() {
   ctx.fillText(String(S.alive), 0, 4);
   ctx.restore();
 
+  // --- capa "show": tensión, barra de progreso, combos e hitos ---
+  if (CONFIG.showMode) drawShow();
+
   // --- gancho (modo bucle) ---
   if (CONFIG.loopMode) drawHook();
 
@@ -418,6 +476,71 @@ function draw() {
   }
 }
 
+function drawShow() {
+  // tensión: viñeta roja que late en los últimos anillos
+  if (S.alive > 0 && S.alive <= CONFIG.tensionRings) {
+    const beat = Math.pow(Math.max(0, Math.sin(S.t * Math.PI * 2 * 1.3)), 6);
+    const g = ctx.createRadialGradient(CX, CY, W * 0.35, CX, CY, H * 0.62);
+    g.addColorStop(0, "rgba(255,0,40,0)");
+    g.addColorStop(1, `rgba(255,0,40,${0.28 + 0.32 * beat})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+  // barra de progreso
+  const prog = (CONFIG.rings - S.alive) / CONFIG.rings;
+  const bw = 720, bh = 16, bx = CX - bw / 2, by = H * 0.885;
+  ctx.save();
+  ctx.globalAlpha = 0.9 * (1 - hookAlpha() * 0.6);
+  ctx.fillStyle = "rgba(255,255,255,0.14)";
+  roundRect(bx, by, bw, bh, 8); ctx.fill();
+  if (prog > 0) {
+    const gr = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+    gr.addColorStop(0, `hsl(${(CONFIG.hueInner + S.te * 30) % 360},100%,60%)`);
+    gr.addColorStop(1, `hsl(${(CONFIG.hueInner + 120 + S.te * 30) % 360},100%,60%)`);
+    ctx.fillStyle = gr;
+    ctx.shadowColor = `hsl(${(CONFIG.hueInner + 60 + S.te * 30) % 360},100%,60%)`;
+    ctx.shadowBlur = 18;
+    roundRect(bx, by, Math.max(bh, bw * prog), bh, 8); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  ctx.font = '800 34px "Montserrat", "Arial Black", Arial, sans-serif';
+  ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "rgba(255,255,255,.92)";
+  ctx.fillText(`ESCAPE ${Math.round(prog * 100)}%`, CX, by - 18);
+  ctx.restore();
+  // textos flotantes
+  for (const p of S.popups) {
+    const a = (S.t - p.t0) / p.life;
+    const pop = a < 0.12 ? 0.6 + 0.6 * (a / 0.12) : 1.2 - 0.2 * Math.min(1, (a - 0.12) / 0.2);
+    const alpha = a > 0.7 ? (1 - a) / 0.3 : 1;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.translate(CX, p.kind === "mile" ? H * 0.3 : H * 0.7);
+    ctx.font = p.kind === "mile" || p.mega ? '900 104px "Montserrat", "Arial Black", Arial, sans-serif'
+                                           : '900 78px "Montserrat", "Arial Black", Arial, sans-serif';
+    const fit = Math.min(1, (W * 0.84) / (ctx.measureText(p.text).width * 1.2 + 14));
+    ctx.scale(pop * fit, pop * fit);
+    ctx.rotate(p.kind === "combo" ? -0.06 : 0);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = p.kind === "mile" || p.mega ? '900 104px "Montserrat", "Arial Black", Arial, sans-serif'
+                                           : '900 78px "Montserrat", "Arial Black", Arial, sans-serif';
+    const hue = p.kind === "mile" ? 50 : (S.t * 300) % 360;
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 14;
+    ctx.strokeStyle = "rgba(0,0,0,.85)";
+    ctx.strokeText(p.text, 0, 0);
+    ctx.shadowColor = `hsl(${hue},100%,55%)`;
+    ctx.shadowBlur = 30;
+    ctx.fillStyle = p.kind === "mile" ? "#fff" : `hsl(${hue},100%,70%)`;
+    ctx.fillText(p.text, 0, 0);
+    ctx.restore();
+  }
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
 function hookAlpha() {
   // visible desde el primer fotograma (para que el bucle empalme) y se va;
   // vuelve a aparecer al final del rebobinado
@@ -479,12 +602,26 @@ function tick(dt) {
   S.pop = Math.max(0, S.pop - dt * 6);
   S.flash = Math.max(0, S.flash - dt * 2.5);
   S.kick *= Math.exp(-7 * dt);
+  stepShow(dt);
   if (CONFIG.loopMode && S.finished && S.t - S.finishT > CONFIG.rewindDelay) startRewind();
   if (S.finished && rec && !CONFIG.loopMode && S.t - S.finishT > 1.2 + CONFIG.fadeOutTime + 0.4) stopRecording();
 }
 
+function stepShow(dt) {
+  if (!CONFIG.showMode) return;
+  // latido sonoro sincronizado con la viñeta roja
+  if (!S.rewind && S.alive > 0 && S.alive <= CONFIG.tensionRings) {
+    const b = Math.floor(S.t * 1.3 + 0.25);
+    if (b !== S.lastBeat) { S.lastBeat = b; onHeartbeat(); }
+  }
+  S.shake *= Math.exp(-6 * dt);
+  S.popups = S.popups.filter(p => S.t - p.t0 < p.life);
+  S.shocks = S.shocks.filter(k => S.t - k.t0 < 0.9);
+}
+
 // ---------- rebobinado: la escena vuelve exactamente al primer fotograma ----------
 function startRewind() {
+  S.popups = []; S.shocks = [];
   S.rewind = { p: 0, te0: S.te, bx: S.ball.x, by: S.ball.y, last: CONFIG.rings };
   S.trail = [];
   onRewind();
@@ -510,12 +647,14 @@ function stepRewind(dt) {
   S.flash = Math.max(0, S.flash - dt * 2.5);
   S.pop = Math.max(0, S.pop - dt * 6);
   stepParticles(dt);
+  stepShow(dt);
   S.t += dt;
   if (R.p >= 1) {
     // estado final = estado inicial
     S.current = 0; S.alive = CONFIG.rings; S.ceff = 0; S.te = 0; S.zoom = 1; S.kick = 0;
     S.ball.x = S.start.x; S.ball.y = S.start.y; S.trail = [];
     S.pop = 0; S.flash = 0;
+    S.popups = []; S.shocks = []; S.shake = 0; S.combo = 0;
     S.loopDone = true;
     if (rec) stopRecording();
   }
@@ -585,6 +724,45 @@ function onBreak(ring) {
   og.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
   o.connect(og); og.connect(master);
   o.start(now); o.stop(now + 0.32);
+}
+function onCombo(n) {
+  if (!AC || muted) return;
+  const now = AC.currentTime;
+  if (now - (S.lastCombo || -1) < 0.04) return;
+  S.lastCombo = now;
+  const f = 523.25 * Math.pow(2, Math.min(n - 3, 14) / 12);   // sube un semitono por anillo
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = "square"; o.frequency.value = f;
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.09, now + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+  o.connect(g); g.connect(master); o.start(now); o.stop(now + 0.18);
+}
+function onMilestone(n) {
+  if (!AC || muted) return;
+  const now = AC.currentTime;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = "sine";
+  o.frequency.setValueAtTime(70, now);
+  o.frequency.exponentialRampToValueAtTime(32, now + 0.8);
+  g.gain.setValueAtTime(0.7, now);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+  o.connect(g); g.connect(master); o.start(now); o.stop(now + 0.95);
+  onBreak(0);
+}
+function onHeartbeat() {
+  if (!AC || muted) return;
+  const now = AC.currentTime;
+  for (const [dt, amp] of [[0, 0.55], [0.16, 0.35]]) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(62, now + dt);
+    o.frequency.exponentialRampToValueAtTime(40, now + dt + 0.18);
+    g.gain.setValueAtTime(0.0001, now + dt);
+    g.gain.exponentialRampToValueAtTime(amp, now + dt + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + dt + 0.22);
+    o.connect(g); g.connect(master); o.start(now + dt); o.stop(now + dt + 0.25);
+  }
 }
 function onRewind() {
   if (!AC || muted) return;

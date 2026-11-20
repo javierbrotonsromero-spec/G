@@ -26,6 +26,18 @@ Pensado para que TikTok/Shorts lo repita sin corte:
 Ejemplo usado en el vídeo: `index.html?loop=1&zoom=4.5&seed=9` (gancho fuerte: 22 anillos rotos
 en los primeros 2 s).
 
+## Modo show (`?show=1`, incluye el bucle)
+Mecánicas para retener al espectador:
+- **Combos** tipo videojuego ("COMBO x5", "MEGA COMBO x26") con un tono que sube a cada anillo.
+- **Hitos** al quedar 100, 50, 25, 10, 3 y 1 anillos: onda expansiva, temblor, "¡QUEDAN 50!", golpe grave.
+- **Barra de progreso** "ESCAPE xx%".
+- **Tensión final**: viñeta roja que late con sonido de corazón en los últimos 5 anillos.
+- Gancho "¿LLEGARÁ A 0? / NO PARPADEES".
+
+Ejemplo del vídeo: `index.html?show=1&zoom=4.5&seed=151`. En el vídeo renderizado se añade además
+una base musical (bombo, hi-hat y bajo) con el tempo ajustado para que el audio también empalme en
+el bucle; en la página en vivo suenan solo los efectos.
+
 ## Zoom de cámara
 `?zoom=N` acerca la cámara (×1,9, ×3, ×4,5…) escalando la física para que el ritmo no cambie.
 
