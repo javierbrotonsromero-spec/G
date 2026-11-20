@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shuriken Slice</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #e8e8ee;
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { background: #000; height: 100vh; width: calc(100vh * 9 / 16); max-width: 100vw;
+    max-height: calc(100vw * 16 / 9); display: block; }
+  #ui { position: fixed; top: 10px; left: 10px; display: flex; gap: 6px; flex-wrap: wrap;
+    align-items: center; z-index: 2; opacity: .85; transition: opacity .3s; }
+  #ui.hidden { opacity: 0; pointer-events: none; }
+  button { background: #16161d; color: #e8e8ee; border: 1px solid #33333f; border-radius: 6px;
+    padding: 6px 10px; font: inherit; cursor: pointer; }
+  button.rec { border-color: #ff3d6e; color: #fff; background: #3a0f1c; }
+  #info { color: #8a8a99; font-size: 12px; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    z-index: 3; background: rgba(0,0,0,.55); cursor: pointer; font-size: 20px; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="1080" height="1920"></canvas></div>
+<div id="ui">
+  <button id="bRestart">↻ Reiniciar (R)</button>
+  <button id="bRec">● Grabar (G)</button>
+  <button id="bMute">Sonido: sí (M)</button>
+  <button id="bHide">Ocultar UI (H)</button>
+  <span id="info"></span>
+</div>
+<div id="start">Toca o pulsa una tecla para empezar</div>
+<script>
+"use strict";
+// ============================================================================
+// CONFIG
+// ============================================================================
+const CONFIG = {
+  width: 1080, height: 1920, fps: 60,
+  // torre de bloques
+  cols: 9, rows: 17,             // 153 bloques
+  block: 108, gap: 8,
+  floorY: 1610,                  // y del suelo (base de la fila inferior)
+  hpWeights: [0.42, 0.36, 0.22], // probabilidad de bloques de 1, 2 y 3 golpes
+  blockGravity: 5200,            // px/s² de caída de los bloques
+  hueTop: 280, hueSpan: -200,    // degradado de color por fila (abajo -> arriba)
+  // shuriken
+  radius: 92,                    // radio exterior de las puntas
+  hitRadius: 52,                 // radio de colisión
+  speed: 900,                    // px/s horizontal inicial
+  speedGain: 1.006,              // por bloque roto
+  maxSpeed: 2000,
+  spin: 26,                      // rad/s
+  bobAmp: 28, bobFreq: 0.85,     // ligera oscilación vertical
+  substeps: 10,
+  afterimages: 7,
+  // efectos
+  particlesPerBlock: 46, shardsPerBlock: 7, maxParticles: 4000,
+  kick: 0.018, kickMax: 0.08,
+  slowmoBlocks: 1, slowmoScale: 0.3,
+  // final en bucle
+  rewindDelay: 0.9, rewindTime: 1.8,
+  counterFont: '900 150px "Montserrat", "Arial Black", Arial, sans-serif',
+  videoBitrate: 16_000_000,
+};
+
+// ============================================================================
+// PRNG
+// ============================================================================
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d", { alpha: false });
+const W = CONFIG.width, H = CONFIG.height, TAU = Math.PI * 2, DT = 1 / CONFIG.fps;
+const B = CONFIG.block, G = CONFIG.gap, STEP = B + G;
+const X0 = (W - (CONFIG.cols * B + (CONFIG.cols - 1) * G)) / 2;
+const LINE_Y = CONFIG.floorY - B / 2;            // altura de vuelo = centro de la fila inferior
+const TOTAL = CONFIG.cols * CONFIG.rows;
+
+let S = null, seed = 0;
+
+function colX(c) { return X0 + c * STEP + B / 2; }
+function stackY(k) { return CONFIG.floorY - B / 2 - k * STEP; }
+function rowHue(r) { return (CONFIG.hueTop + CONFIG.hueSpan * (r / (CONFIG.rows - 1)) + 720) % 360; }
+
+function newSim(newSeed) {
+  seed = newSeed >>> 0;
+  const rnd = mulberry32(seed);
+  const blocks = [];
+  const columns = [];
+  for (let c = 0; c < CONFIG.cols; c++) {
+    columns.push([]);
+    for (let r = 0; r < CONFIG.rows; r++) {
+      const u = rnd();
+      const hp = u < CONFIG.hpWeights[0] ? 1 : u < CONFIG.hpWeights[0] + CONFIG.hpWeights[1] ? 2 : 3;
+      const b = { c, r, hp, maxhp: hp, y: stackY(r), vy: 0, alive: true, flash: 0, cool: 0,
+                  hue: rowHue(r), killedAt: -1, killOrder: -1 };
+      blocks.push(b); columns[c].push(b);
+    }
+  }
+  const dir = rnd() < 0.5 ? 1 : -1;
+  S = {
+    rnd, t: 0, bt: 0, blocks, columns, alive: TOTAL, killed: 0,
+    sh: { x: dir > 0 ? CONFIG.radius + 10 : W - CONFIG.radius - 10, vx: dir * CONFIG.speed,
+          speed: CONFIG.speed, ang: 0, hue: (seed * 137.508) % 360, flash: 0 },
+    after: [], parts: [], shards: [], sparks: [],
+    kick: 0, shake: 0, flash: 0, pop: 0, timeScale: 1,
+    finished: false, finishT: 0, rewind: null, loopDone: false, killList: [],
+    lastClink: -1, lastSlice: -1,
+  };
+  S.start = { x: S.sh.x, vx: S.sh.vx, ang: 0, hue: S.sh.hue };
+  updateInfo();
+}
+
+function shY() { return LINE_Y + CONFIG.bobAmp * Math.sin(S.bt * TAU * CONFIG.bobFreq); }
+
+// ============================================================================
+// Física
+// ============================================================================
+function stepBlocks(dt) {
+  for (const col of S.columns) {
+    for (let k = 0; k < col.length; k++) {
+      const b = col[k];
+      const target = stackY(k);
+      if (b.y < target - 0.01 || b.vy !== 0) {
+        b.vy += CONFIG.blockGravity * dt;
+        b.y += b.vy * dt;
+        if (b.y >= target) {
+          b.y = target;
+          if (b.vy > 900) { b.vy = -b.vy * 0.12; onLand(b); } else b.vy = 0;
+        }
+      }
+      b.flash = Math.max(0, b.flash - dt * 6);
+      b.cool = Math.max(0, b.cool - dt);
+    }
+  }
+}
+
+function stepShuriken(dt) {
+  const s = S.sh, n = CONFIG.substeps, h = dt / n;
+  const R = CONFIG.hitRadius;
+  for (let k = 0; k < n; k++) {
+    s.x += s.vx * h;
+    S.bt += h;
+    const y = shY();
+    // paredes
+    if (s.x < CONFIG.radius) { s.x = CONFIG.radius; s.vx = Math.abs(s.vx); wallBounce(); }
+    if (s.x > W - CONFIG.radius) { s.x = W - CONFIG.radius; s.vx = -Math.abs(s.vx); wallBounce(); }
+    if (S.finished) continue;
+    // bloques (columna bajo el shuriken y vecinas)
+    const c0 = Math.max(0, Math.floor((s.x - R - X0) / STEP)), c1 = Math.min(CONFIG.cols - 1, Math.floor((s.x + R - X0) / STEP));
+    for (let c = c0; c <= c1; c++) {
+      const col = S.columns[c];
+      for (let i = 0; i < col.length; i++) {
+        const b = col[i];
+        if (b.y + B / 2 < y - R) break;                // columnas ordenadas de abajo arriba
+        if (b.cool > 0) continue;
+        const bx = colX(c);
+        const dx = Math.max(Math.abs(s.x - bx) - B / 2, 0), dy = Math.max(Math.abs(y - b.y) - B / 2, 0);
+        if (dx * dx + dy * dy > R * R) continue;
+        hitBlock(b, i, s, bx);
+        break;
+      }
+    }
+  }
+}
+
+function wallBounce() {
+  S.sh.hue = (S.sh.hue + 137.508) % 360;
+  S.sh.flash = 1;
+  onClink(0.7);
+}
+
+function hitBlock(b, idx, s, bx) {
+  b.hp--;
+  b.flash = 1;
+  b.cool = 0.09;
+  spawnSparks(s.x + Math.sign(bx - s.x) * CONFIG.hitRadius, shY(), b.hue, 14);
+  if (b.hp <= 0) {
+    // corte limpio: el shuriken sigue
+    S.columns[b.c].splice(idx, 1);
+    b.alive = false; b.killOrder = S.killed++; b.killedAt = S.t;
+    S.killList.push(b);
+    S.alive = TOTAL - S.killed;
+    S.pop = 1;
+    S.kick = Math.min(CONFIG.kickMax, S.kick + CONFIG.kick);
+    S.shake = Math.min(1, S.shake + 0.35);
+    shatter(b, bx, s.vx);
+    s.speed = Math.min(CONFIG.maxSpeed, s.speed * CONFIG.speedGain);
+    s.vx = Math.sign(s.vx) * s.speed;
+    onSlice(b);
+    if (S.alive === 0) finish();
+  } else {
+    // bloque duro: rebota y se agrieta
+    s.vx = -s.vx;
+    s.x = bx + Math.sign(s.x - bx) * (B / 2 + CONFIG.hitRadius + 0.5);
+    s.hue = (s.hue + 137.508) % 360;
+    s.flash = 1;
+    S.shake = Math.min(1, S.shake + 0.2);
+    onClink(1);
+  }
+}
+
+function finish() {
+  S.finished = true; S.finishT = S.t; S.flash = 1; S.shake = 1;
+  for (let k = 0; k < 3; k++) spawnSparks(S.sh.x, shY(), (S.sh.hue + k * 90) % 360, 90);
+  onFinale();
+}
+
+// ============================================================================
+// Partículas: polvo, astillas que giran y chispas
+// ============================================================================
+function spawnSparks(x, y, hue, n) {
+  for (let i = 0; i < n && S.sparks.length < 900; i++) {
+    const a = S.rnd() * TAU, sp = 300 + 1100 * S.rnd();
+    S.sparks.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 200, life: 0.25 + 0.35 * S.rnd(), age: 0, hue });
+  }
+}
+function shatter(b, bx, vx) {
+  const n = Math.min(CONFIG.particlesPerBlock, CONFIG.maxParticles - S.parts.length);
+  for (let i = 0; i < n; i++) {
+    const px = bx + (S.rnd() - 0.5) * B, py = b.y + (S.rnd() - 0.5) * B;
+    S.parts.push({ x: px, y: py, vx: Math.sign(vx) * (150 + 650 * S.rnd()) + (S.rnd() - 0.5) * 300,
+                   vy: -200 - 700 * S.rnd(), life: 0.8 + 0.8 * S.rnd(), age: 0, hue: b.hue, s: 3 + 5 * S.rnd() });
+  }
+  for (let i = 0; i < CONFIG.shardsPerBlock; i++) {
+    S.shards.push({ x: bx + (S.rnd() - 0.5) * B * 0.6, y: b.y + (S.rnd() - 0.5) * B * 0.6,
+      vx: Math.sign(vx) * (250 + 600 * S.rnd()), vy: -300 - 900 * S.rnd(), a: S.rnd() * TAU,
+      va: (S.rnd() - 0.5) * 22, size: 18 + 26 * S.rnd(), life: 1.2 + 0.6 * S.rnd(), age: 0, hue: b.hue });
+  }
+}
+function stepParticles(dt) {
+  const g = 2400;
+  for (const arr of [S.parts, S.shards, S.sparks]) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const p = arr[i];
+      p.age += dt;
+      if (p.age >= p.life) { arr.splice(i, 1); continue; }
+      p.vy += (arr === S.sparks ? 1200 : g) * dt;
+      p.vx *= Math.exp(-1.2 * dt);
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.a !== undefined) p.a += p.va * dt;
+      if (p.y > CONFIG.floorY && p.vy > 0 && arr !== S.sparks) { p.y = CONFIG.floorY; p.vy *= -0.35; p.vx *= 0.7; }
+    }
+  }
+}
+
+// ============================================================================
+// Bucle de simulación
+// ============================================================================
+function tick(dt) {
+  if (S.rewind) { stepRewind(dt); return; }
+  const slow = !S.finished && S.alive <= CONFIG.slowmoBlocks;
+  S.timeScale += ((slow ? CONFIG.slowmoScale : 1) - S.timeScale) * (1 - Math.exp(-6 * dt));
+  const sdt = dt * S.timeScale;
+  stepShuriken(sdt);
+  stepBlocks(sdt);
+  stepParticles(sdt);
+  S.sh.ang += CONFIG.spin * sdt * Math.sign(S.sh.vx || 1);
+  S.after.push({ x: S.sh.x, y: shY(), a: S.sh.ang, hue: S.sh.hue });
+  while (S.after.length > CONFIG.afterimages) S.after.shift();
+  S.t += sdt;
+  decay(dt);
+  if (S.finished && S.t - S.finishT > CONFIG.rewindDelay) startRewind();
+}
+function decay(dt) {
+  S.kick *= Math.exp(-7 * dt);
+  S.shake *= Math.exp(-7 * dt);
+  S.flash = Math.max(0, S.flash - dt * 2.5);
+  S.pop = Math.max(0, S.pop - dt * 6);
+  S.sh.flash = Math.max(0, S.sh.flash - dt * 6);
+}
+
+// ---------- rebobinado: la torre se reconstruye y la escena vuelve al primer fotograma ----------
+function startRewind() {
+  S.rewind = { p: 0, x0: S.sh.x, ang0: S.sh.ang, bt0: S.bt, last: 0 };
+  S.after = [];
+  onRewind();
+}
+function ease(p) { return p < 0.5 ? 4 * p ** 3 : 1 - (-2 * p + 2) ** 3 / 2; }
+function stepRewind(dt) {
+  const R = S.rewind;
+  R.p = Math.min(1, R.p + dt / CONFIG.rewindTime);
+  const e = ease(R.p);
+  // los bloques vuelven en orden inverso al que se rompieron
+  let restored = 0;
+  for (const b of S.killList) {
+    const start = (1 - (b.killOrder + 1) / TOTAL) * 0.7;          // el último roto vuelve primero
+    const q = Math.min(1, Math.max(0, (R.p - start) / 0.3));
+    b.rq = ease(q);
+    if (q >= 1) restored++;
+  }
+  S.alive = Math.min(TOTAL, S.killed - (S.killList.length - restored) + (TOTAL - S.killed) + 0);
+  S.alive = (TOTAL - S.killed) + restored;
+  if (restored > R.last) { S.pop = 0.6; R.last = restored; }
+  // los bloques que sobrevivieron vuelven a su sitio original
+  for (const col of S.columns) for (const b of col) { b.y = b.y + (stackY(b.r) - b.y) * e; b.hp = b.hp; }
+  // shuriken
+  S.sh.x = R.x0 + (S.start.x - R.x0) * e;
+  S.sh.ang = R.ang0 + (S.start.ang - R.ang0) * e;
+  S.bt = R.bt0 * (1 - e);
+  stepParticles(dt);
+  decay(dt);
+  S.t += dt;
+  if (R.p >= 1) resetToStart();
+}
+function resetToStart() {
+  const keepSeed = seed;
+  newSim(keepSeed);                                 // estado exactamente inicial
+  S.loopDone = true;
+  if (rec) stopRecording();
+}
+
+// ============================================================================
+// Dibujo
+// ============================================================================
+function drawShuriken(x, y, ang, hue, alpha, flash) {
+  const r = CONFIG.radius;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4;
+    const rr = i % 2 === 0 ? r : r * 0.34;
+    const a2 = a + (i % 2 === 0 ? 0 : 0.12);
+    if (i === 0) ctx.moveTo(Math.cos(a2) * rr, Math.sin(a2) * rr); else ctx.lineTo(Math.cos(a2) * rr, Math.sin(a2) * rr);
+  }
+  ctx.closePath();
+  const gr = ctx.createLinearGradient(-r, -r, r, r);
+  gr.addColorStop(0, "#f4f6fb"); gr.addColorStop(0.45, "#8d93a3"); gr.addColorStop(0.55, "#e9ecf3"); gr.addColorStop(1, "#5d6271");
+  ctx.fillStyle = gr;
+  ctx.shadowColor = `hsl(${hue},100%,60%)`;
+  ctx.shadowBlur = 24 + 40 * flash;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = `hsl(${hue},100%,${62 + 25 * flash}%)`;
+  ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.13, 0, TAU); ctx.fillStyle = "#000"; ctx.fill();
+  ctx.lineWidth = 3; ctx.stroke();
+  ctx.restore();
+}
+
+function blockRect(x, y, s, r) {
+  ctx.beginPath();
+  ctx.moveTo(x - s + r, y - s); ctx.arcTo(x + s, y - s, x + s, y + s, r); ctx.arcTo(x + s, y + s, x - s, y + s, r);
+  ctx.arcTo(x - s, y + s, x - s, y - s, r); ctx.arcTo(x - s, y - s, x + s, y - s, r); ctx.closePath();
+}
+
+function drawBlock(b, x, y, alpha) {
+  const s = B / 2;
+  ctx.globalAlpha = alpha;
+  // relleno: más brillante cuanto más vida
+  const lv = 14 + 10 * b.hp + 40 * b.flash;
+  ctx.fillStyle = `hsl(${b.hue},90%,${lv}%)`;
+  blockRect(x, y, s - 2, 12);
+  ctx.fill();
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = `hsl(${b.hue},100%,${58 + 30 * b.flash}%)`;
+  ctx.shadowColor = `hsl(${b.hue},100%,55%)`;
+  ctx.shadowBlur = 14;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  // núcleo según la vida: 3 golpes = rombo, 2 = punto
+  if (b.hp >= 2) {
+    ctx.fillStyle = `hsla(${b.hue},100%,85%,.9)`;
+    ctx.beginPath();
+    if (b.hp >= 3) { ctx.moveTo(x, y - 20); ctx.lineTo(x + 20, y); ctx.lineTo(x, y + 20); ctx.lineTo(x - 20, y); ctx.closePath(); }
+    else ctx.arc(x, y, 11, 0, TAU);
+    ctx.fill();
+  }
+  // grietas al recibir golpes
+  if (b.hp < b.maxhp) {
+    ctx.strokeStyle = "rgba(0,0,0,.75)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(x - s + 10, y - 12); ctx.lineTo(x - 8, y + 4); ctx.lineTo(x + 6, y - 14); ctx.lineTo(x + s - 8, y + 10);
+    if (b.maxhp - b.hp >= 2) { ctx.moveTo(x - 6, y - s + 8); ctx.lineTo(x + 4, y + 2); ctx.lineTo(x - 10, y + s - 10); }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  const z = 1 + S.kick;
+  const sx = Math.sin(S.t * 93.1) * 18 * S.shake, sy = Math.cos(S.t * 71.7) * 14 * S.shake;
+  ctx.setTransform(z, 0, 0, z, W / 2 * (1 - z) + sx, LINE_Y * (1 - z) + sy);
+
+  // suelo neón
+  const fl = ctx.createLinearGradient(0, CONFIG.floorY, 0, H);
+  fl.addColorStop(0, "rgba(120,80,255,.28)"); fl.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = fl; ctx.fillRect(-200, CONFIG.floorY, W + 400, H - CONFIG.floorY + 200);
+  ctx.strokeStyle = "hsl(265,100%,65%)"; ctx.lineWidth = 4;
+  ctx.shadowColor = "hsl(265,100%,60%)"; ctx.shadowBlur = 20;
+  ctx.beginPath(); ctx.moveTo(-200, CONFIG.floorY + 2); ctx.lineTo(W + 200, CONFIG.floorY + 2); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // bloques vivos
+  for (const col of S.columns) for (const b of col) {
+    if (b.y < -B) continue;
+    drawBlock(b, colX(b.c), b.y, 1);
+  }
+  // bloques volviendo en el rebobinado
+  if (S.rewind) for (const b of S.killList) {
+    const q = b.rq || 0;
+    if (q <= 0) continue;
+    const y0 = CONFIG.floorY + 260, y1 = stackY(b.r);
+    drawBlock({ ...b, hp: b.maxhp, flash: 0 }, colX(b.c), y0 + (y1 - y0) * q, Math.min(1, q * 1.6));
+  }
+
+  // partículas
+  for (const p of S.parts) {
+    ctx.globalAlpha = 1 - p.age / p.life;
+    ctx.fillStyle = `hsl(${p.hue},100%,62%)`;
+    ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s);
+  }
+  for (const p of S.shards) {
+    ctx.globalAlpha = 1 - p.age / p.life;
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a);
+    ctx.fillStyle = `hsl(${p.hue},95%,45%)`;
+    ctx.strokeStyle = `hsl(${p.hue},100%,70%)`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-p.size / 2, -p.size / 3); ctx.lineTo(p.size / 2, -p.size / 4); ctx.lineTo(p.size / 5, p.size / 2); ctx.closePath();
+    ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+  ctx.globalCompositeOperation = "lighter";
+  for (const p of S.sparks) {
+    const k = 1 - p.age / p.life;
+    ctx.globalAlpha = k;
+    ctx.strokeStyle = `hsl(${p.hue},100%,${70 + 20 * k}%)`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.025, p.y - p.vy * 0.025); ctx.stroke();
+  }
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+
+  // shuriken con imágenes residuales
+  const y = shY();
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < S.after.length - 1; i++) {
+    const a = S.after[i];
+    drawShuriken(a.x, a.y, a.a, a.hue, 0.08 + 0.22 * (i / S.after.length), 0);
+  }
+  ctx.globalCompositeOperation = "source-over";
+  drawShuriken(S.sh.x, y, S.sh.ang, S.sh.hue, 1, S.sh.flash);
+
+  // contador
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.save();
+  ctx.translate(W / 2, 250);
+  const sc = 1 + 0.15 * S.pop;
+  ctx.scale(sc, sc);
+  ctx.font = CONFIG.counterFont;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineJoin = "round"; ctx.lineWidth = 16; ctx.strokeStyle = "rgba(0,0,0,.8)";
+  ctx.strokeText(String(S.alive), 0, 0);
+  ctx.shadowColor = "rgba(0,0,0,.9)"; ctx.shadowBlur = 26; ctx.shadowOffsetY = 5;
+  ctx.fillStyle = "#fff";
+  ctx.fillText(String(S.alive), 0, 0);
+  ctx.restore();
+
+  if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${S.flash * 0.35})`; ctx.fillRect(0, 0, W, H); }
+}
+
+// ============================================================================
+// Bucle principal
+// ============================================================================
+let acc = 0, last = 0, running = false;
+function frame(now) {
+  if (!running) return;
+  const el = Math.min(0.1, (now - last) / 1000 || DT);
+  last = now; acc += el;
+  let n = 0;
+  while (acc >= DT && n < 4) { tick(DT); acc -= DT; n++; }
+  if (n === 4) acc = 0;
+  if (S.loopDone) { S.loopDone = false; }
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// ============================================================================
+// Sonido
+// ============================================================================
+let AC = null, master = null, recDest = null, noiseBuf = null, muted = false;
+function initAudio() {
+  if (AC) return;
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value = 0.55;
+  const comp = AC.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4;
+  master.connect(comp); comp.connect(AC.destination);
+  recDest = AC.createMediaStreamDestination(); comp.connect(recDest);
+  noiseBuf = AC.createBuffer(1, AC.sampleRate, AC.sampleRate);
+  const d = noiseBuf.getChannelData(0), r = mulberry32(99);
+  for (let i = 0; i < d.length; i++) d[i] = r() * 2 - 1;
+}
+function noiseHit(t, f0, f1, dur, amp, type = "bandpass") {
+  const src = AC.createBufferSource(); src.buffer = noiseBuf;
+  const f = AC.createBiquadFilter(); f.type = type; f.Q.value = 1.2;
+  f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = AC.createGain(); g.gain.setValueAtTime(amp, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(g); g.connect(master); src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.02);
+}
+function ping(t, freq, dur, amp, type = "sine") {
+  const o = AC.createOscillator(), g = AC.createGain(); o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(amp, t + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+}
+const PENTA = [0, 2, 4, 7, 9, 12, 14, 16];
+function onSlice(b) {
+  if (!AC || muted) return;
+  const t = AC.currentTime; if (t - S.lastSlice < 0.03) return; S.lastSlice = t;
+  noiseHit(t, 7000, 2500, 0.18, 0.45, "highpass");                        // "shing"
+  ping(t, 880 * Math.pow(2, PENTA[S.killed % 8] / 12), 0.22, 0.16, "triangle");
+  noiseHit(t, 1400, 200, 0.3, 0.35, "lowpass");                           // crujido
+}
+function onClink(a) {
+  if (!AC || muted) return;
+  const t = AC.currentTime; if (t - S.lastClink < 0.03) return; S.lastClink = t;
+  ping(t, 2400, 0.12, 0.18 * a, "square"); ping(t, 3600, 0.08, 0.1 * a);
+}
+function onLand(b) {
+  if (!AC || muted) return;
+  ping(AC.currentTime, 90, 0.12, 0.12);
+}
+function onFinale() {
+  if (!AC || muted) return;
+  const t = AC.currentTime;
+  for (let k = 0; k < 3; k++) { noiseHit(t + k * 0.09, 2600, 120, 0.7, 0.5, "lowpass"); }
+  const o = AC.createOscillator(), g = AC.createGain(); o.frequency.setValueAtTime(110, t);
+  o.frequency.exponentialRampToValueAtTime(35, t + 0.8); g.gain.setValueAtTime(0.7, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9); o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.95);
+}
+function onRewind() {
+  if (!AC || muted) return;
+  const t = AC.currentTime, d = CONFIG.rewindTime;
+  const o = AC.createOscillator(), g = AC.createGain(), lp = AC.createBiquadFilter();
+  o.type = "sawtooth"; o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(900, t + d);
+  lp.type = "lowpass"; lp.frequency.value = 1800;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.12, t + 0.3); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(lp); lp.connect(g); g.connect(master); o.start(t); o.stop(t + d + 0.05);
+}
+
+// ============================================================================
+// Grabación
+// ============================================================================
+let rec = null, chunks = [];
+function startRecording() {
+  initAudio();
+  const tracks = [...cv.captureStream(CONFIG.fps).getVideoTracks(), ...recDest.stream.getAudioTracks()];
+  const types = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  const mimeType = types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  chunks = [];
+  rec = new MediaRecorder(new MediaStream(tracks), { mimeType, videoBitsPerSecond: CONFIG.videoBitrate });
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob(chunks, { type: "video/webm" }));
+    a.download = `shuriken-seed${seed}.webm`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    rec = null; updateInfo();
+  };
+  newSim(seed);
+  rec.start(250);
+  updateInfo();
+}
+function stopRecording() { if (rec && rec.state !== "inactive") rec.stop(); }
+
+// ============================================================================
+// UI
+// ============================================================================
+const $ = id => document.getElementById(id);
+function updateInfo() {
+  $("info").textContent = `semilla ${seed}` + (rec ? "  ·  ● grabando" : "");
+  $("bRec").textContent = rec ? "■ Parar (G)" : "● Grabar (G)";
+  $("bRec").classList.toggle("rec", !!rec);
+}
+function restart() { newSim((Math.random() * 2 ** 32) >>> 0); history.replaceState(null, "", `?seed=${seed}`); }
+function begin() {
+  if (running) return;
+  $("start").remove(); initAudio(); if (AC.state === "suspended") AC.resume();
+  running = true; last = performance.now(); requestAnimationFrame(frame);
+}
+$("start").addEventListener("pointerdown", begin);
+$("bRestart").onclick = () => { begin(); restart(); };
+$("bRec").onclick = () => { begin(); rec ? stopRecording() : startRecording(); };
+$("bMute").onclick = () => { muted = !muted; $("bMute").textContent = `Sonido: ${muted ? "no" : "sí"} (M)`; };
+$("bHide").onclick = () => $("ui").classList.toggle("hidden");
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (!running) begin();
+  if (k === "r") restart();
+  else if (k === "g") $("bRec").click();
+  else if (k === "m") $("bMute").click();
+  else if (k === "h") $("bHide").click();
+});
+const qs = new URLSearchParams(location.search);
+newSim(qs.has("seed") ? Number(qs.get("seed")) : (Math.random() * 2 ** 32) >>> 0);
+draw();
+window.__sim = () => S; window.__tick = tick; window.__draw = draw;
+</script>
+</body>
+</html>
