@@ -82,12 +82,26 @@ const CONFIG = {
   counterFont: '900 112px "Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif',
   // final
   fadeOutTime: 1.6,
+  // modo bucle (?loop=1): gancho, golpes de cámara, cámara lenta final y
+  // rebobinado que deja la escena exactamente como en el primer fotograma
+  loopMode: false,
+  hookTitle: "¿PODRÁ ESCAPAR?",
+  hookSub: "150 anillos",
+  hookTime: 2.2,           // segundos que se ve el gancho al principio
+  kickPerRing: 0.035,      // "puñetazo" de zoom por anillo roto
+  kickMax: 0.14,
+  slowmoRings: 2,          // cámara lenta cuando quedan estos anillos
+  slowmoScale: 0.38,
+  rewindDelay: 0.9,        // tras la explosión final
+  rewindTime: 1.7,
   // grabación
   videoBitrate: 16_000_000,
 };
 
-{ const z = Number(new URLSearchParams(location.search).get("zoom"));
-  if (z > 0) CONFIG.cameraZoom = z; }
+{ const q = new URLSearchParams(location.search);
+  const z = Number(q.get("zoom"));
+  if (z > 0) CONFIG.cameraZoom = z;
+  if (q.get("loop") === "1") CONFIG.loopMode = true; }
 const CZ = CONFIG.cameraZoom;                    // escala mundo -> pantalla de la cámara
 const BALL_R = CONFIG.ballRadius / Math.sqrt(CZ); // la pelota crece algo en pantalla con el zoom
 
@@ -153,9 +167,16 @@ function newSim(newSeed) {
     pop: 0,                              // animación del contador
     flash: 0,
     finished: false, finishT: 0,
+    kick: 0,                             // golpe de zoom (se suma al zoom y decae)
+    timeScale: 1,                        // cámara lenta
+    te: 0,                               // tiempo "visual" de giro/color (se rebobina en el bucle)
+    rewind: null,                        // estado del rebobinado final
+    loopDone: false,
+    start: null,
     lastBlip: -1,
     lastCrash: -1,
   };
+  S.start = { x: S.ball.x, y: S.ball.y, vx: S.ball.vx, vy: S.ball.vy };
   updateInfo();
 }
 
@@ -218,6 +239,10 @@ function breakRing(t) {
   S.alive = CONFIG.rings - S.current;
   S.ball.crossing = false;
   S.pop = 1;
+  if (CONFIG.loopMode) {
+    S.kick = Math.min(CONFIG.kickMax, S.kick + CONFIG.kickPerRing);
+    S.flash = Math.max(S.flash, 0.18);
+  }
   // un poco más rápido cada vez
   const b = S.ball;
   b.speed = Math.min(CONFIG.maxSpeed / CZ, b.speed * CONFIG.speedGainPerRing);
@@ -293,7 +318,7 @@ function updateCamera(dt) {
 // Dibujo
 // ============================================================================
 function draw() {
-  const z = S.zoom * CZ, t = S.t;
+  const z = S.zoom * CZ * (1 + S.kick), t = S.te;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
@@ -332,7 +357,7 @@ function draw() {
 
   // --- estela ---
   const tr = S.trail, nT = tr.length;
-  const headHue = (t * 140) % 360;
+  const headHue = ((S.te * 140) % 360 + 360) % 360;
   if (nT > 1) {
     ctx.lineCap = "round";
     ctx.globalCompositeOperation = "lighter";
@@ -379,15 +404,44 @@ function draw() {
   ctx.fillText(String(S.alive), 0, 4);
   ctx.restore();
 
+  // --- gancho (modo bucle) ---
+  if (CONFIG.loopMode) drawHook();
+
   // --- flash / fundido final ---
   if (S.flash > 0) {
     ctx.fillStyle = `rgba(255,255,255,${S.flash * 0.35})`;
     ctx.fillRect(0, 0, W, H);
   }
-  if (S.finished) {
+  if (S.finished && !CONFIG.loopMode) {
     const k = Math.min(1, Math.max(0, (S.t - S.finishT - 1.2) / CONFIG.fadeOutTime));
     if (k > 0) { ctx.fillStyle = `rgba(0,0,0,${k})`; ctx.fillRect(0, 0, W, H); }
   }
+}
+
+function hookAlpha() {
+  // visible desde el primer fotograma (para que el bucle empalme) y se va;
+  // vuelve a aparecer al final del rebobinado
+  let a = 1 - Math.min(1, Math.max(0, (S.t - CONFIG.hookTime) / 0.45));
+  if (S.rewind) a = Math.max(a, Math.min(1, Math.max(0, (S.rewind.p - 0.7) / 0.3)));
+  return a;
+}
+function drawHook() {
+  const a = hookAlpha();
+  if (a <= 0.001) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(0,0,0,.9)";
+  ctx.shadowBlur = 28;
+  ctx.shadowOffsetY = 6;
+  ctx.fillStyle = "#fff";
+  ctx.font = '900 92px "Montserrat", "Arial Black", Arial, sans-serif';
+  ctx.fillText(CONFIG.hookTitle, CX, H * 0.2);
+  ctx.font = '800 54px "Montserrat", "Arial Black", Arial, sans-serif';
+  ctx.fillStyle = `hsl(${(CONFIG.hueInner + 40) % 360},100%,72%)`;
+  ctx.fillText(CONFIG.hookSub.toUpperCase(), CX, H * 0.2 + 92);
+  ctx.restore();
 }
 
 // ============================================================================
@@ -410,15 +464,61 @@ function frame(now) {
 }
 
 function tick(dt) {
-  stepPhysics(dt);
+  if (S.rewind) { stepRewind(dt); return; }
+  // cámara lenta al final (modo bucle)
+  const slow = CONFIG.loopMode && !S.finished && S.alive <= CONFIG.slowmoRings;
+  S.timeScale += ((slow ? CONFIG.slowmoScale : 1) - S.timeScale) * (1 - Math.exp(-6 * dt));
+  const sdt = dt * S.timeScale;
+  stepPhysics(sdt);
+  S.te = S.t;
   // estela: posiciones por frame (+ puntos de rebote insertados en la física)
   S.trail.push({ x: S.ball.x, y: S.ball.y });
   while (S.trail.length > CONFIG.trailLength) S.trail.shift();
-  stepParticles(dt);
-  updateCamera(dt);
+  stepParticles(sdt);
+  updateCamera(sdt);
   S.pop = Math.max(0, S.pop - dt * 6);
   S.flash = Math.max(0, S.flash - dt * 2.5);
-  if (S.finished && rec && S.t - S.finishT > 1.2 + CONFIG.fadeOutTime + 0.4) stopRecording();
+  S.kick *= Math.exp(-7 * dt);
+  if (CONFIG.loopMode && S.finished && S.t - S.finishT > CONFIG.rewindDelay) startRewind();
+  if (S.finished && rec && !CONFIG.loopMode && S.t - S.finishT > 1.2 + CONFIG.fadeOutTime + 0.4) stopRecording();
+}
+
+// ---------- rebobinado: la escena vuelve exactamente al primer fotograma ----------
+function startRewind() {
+  S.rewind = { p: 0, te0: S.te, bx: S.ball.x, by: S.ball.y, last: CONFIG.rings };
+  S.trail = [];
+  onRewind();
+}
+function stepRewind(dt) {
+  const R = S.rewind;
+  R.p = Math.min(1, R.p + dt / CONFIG.rewindTime);
+  const e = R.p < 0.5 ? 4 * R.p ** 3 : 1 - (-2 * R.p + 2) ** 3 / 2;   // easeInOutCubic
+  // giro y color hacia atrás hasta t = 0
+  S.te = R.te0 * (1 - e);
+  // los anillos vuelven de fuera hacia dentro
+  S.current = Math.round(CONFIG.rings * (1 - e));
+  S.alive = CONFIG.rings - S.current;
+  S.ceff = Math.min(S.current, CONFIG.rings - 1) * (1 - e) + 0 * e;
+  if (S.current < R.last) { S.pop = 0.6; R.last = S.current; }
+  // la pelota vuelve a su posición inicial
+  S.ball.x = R.bx + (S.start.x - R.bx) * e;
+  S.ball.y = R.by + (S.start.y - R.by) * e;
+  S.trail.push({ x: S.ball.x, y: S.ball.y });
+  while (S.trail.length > 14) S.trail.shift();
+  S.zoom += (1 - S.zoom) * (1 - Math.exp(-8 * dt));
+  S.kick *= Math.exp(-7 * dt);
+  S.flash = Math.max(0, S.flash - dt * 2.5);
+  S.pop = Math.max(0, S.pop - dt * 6);
+  stepParticles(dt);
+  S.t += dt;
+  if (R.p >= 1) {
+    // estado final = estado inicial
+    S.current = 0; S.alive = CONFIG.rings; S.ceff = 0; S.te = 0; S.zoom = 1; S.kick = 0;
+    S.ball.x = S.start.x; S.ball.y = S.start.y; S.trail = [];
+    S.pop = 0; S.flash = 0;
+    S.loopDone = true;
+    if (rec) stopRecording();
+  }
 }
 
 // ============================================================================
@@ -485,6 +585,20 @@ function onBreak(ring) {
   og.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
   o.connect(og); og.connect(master);
   o.start(now); o.stop(now + 0.32);
+}
+function onRewind() {
+  if (!AC || muted) return;
+  const now = AC.currentTime;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = "sawtooth";
+  o.frequency.setValueAtTime(90, now);
+  o.frequency.exponentialRampToValueAtTime(900, now + CONFIG.rewindTime);
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.12, now + 0.3);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + CONFIG.rewindTime);
+  const lp = AC.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 1800;
+  o.connect(lp); lp.connect(g); g.connect(master);
+  o.start(now); o.stop(now + CONFIG.rewindTime + 0.05);
 }
 function onFinale() {
   if (!AC || muted) return;

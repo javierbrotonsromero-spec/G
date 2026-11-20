@@ -15,6 +15,20 @@ Un único archivo `index.html` (Canvas 2D + JavaScript puro, sin librerías), 10
 
 Semillas recomendadas (duración parecida a la referencia): **29** (≈32 s), **35** (≈35 s), **66** (≈39 s).
 
+## Modo bucle (`?loop=1`)
+Pensado para que TikTok/Shorts lo repita sin corte:
+- **Gancho**: rótulo "¿PODRÁ ESCAPAR? / 150 ANILLOS" desde el primer fotograma.
+- **Golpe de cámara** y destello en cada anillo roto (se acumula en las ráfagas).
+- **Cámara lenta** cuando quedan 2 anillos.
+- **Rebobinado final**: los anillos vuelven girando hacia atrás y el contador sube a 150 hasta
+  quedar *exactamente* como en el primer fotograma (bucle perfecto).
+
+Ejemplo usado en el vídeo: `index.html?loop=1&zoom=4.5&seed=9` (gancho fuerte: 22 anillos rotos
+en los primeros 2 s).
+
+## Zoom de cámara
+`?zoom=N` acerca la cámara (×1,9, ×3, ×4,5…) escalando la física para que el ritmo no cambie.
+
 ## Ajustes
 Todos los parámetros están en el objeto `CONFIG` al principio del script: número de anillos,
 separación, tamaño del hueco, velocidad de giro, desfase entre anillos (curvatura de la cuña),
