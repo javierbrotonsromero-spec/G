@@ -42,6 +42,12 @@ Ejemplo del vídeo: `index.html?show=1&zoom=4.5&seed=151`. En el vídeo renderiz
 una base musical (bombo, hi-hat y bajo) con el tempo ajustado para que el audio también empalme en
 el bucle; en la página en vivo suenan solo los efectos.
 
+## Modo multibola (`?multi=1`, incluye show y bucle)
+La bola se divide en dos al romper los anillos 8, 40, 90 y 150 (1 → 2 → 4 → 8 → 16 bolas), con
+destello, onda expansiva y arpegio de "power-up". Cada anillo roto toca la siguiente nota de una
+melodía (pentatónica menor), así que las ráfagas suenan como arpegios. 220 anillos.
+Vídeo: `index.html?multi=1&zoom=4.5&seed=9` (≈29 s; divisiones a los 0,3 / 7,8 / 15,5 / 23,5 s).
+
 ## Zoom de cámara
 `?zoom=N` acerca la cámara (×1,9, ×3, ×4,5…) escalando la física para que el ritmo no cambie.
 

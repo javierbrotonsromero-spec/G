@@ -100,7 +100,12 @@ const CONFIG = {
   comboMin: 3,
   milestones: [100, 50, 25, 10, 3, 1],
   tensionRings: 5,         // viñeta roja con latido cuando quedan estos anillos
-  texts: false,            // textos superpuestos (gancho, combos, hitos, "ESCAPE %"); ?text=1
+  texts: false,
+  // modo multibola (?multi=1): cada splitEvery anillos rotos, cada bola se divide en dos
+  multiBall: false,
+  splitEvery: 15, maxBalls: 16, splitAngleDeg: 28,
+  splitAt: null,           // lista de anillos rotos en los que se dividen (en vez de splitEvery)
+  melody: true,            // cada anillo roto toca la siguiente nota de una melodía            // textos superpuestos (gancho, combos, hitos, "ESCAPE %"); ?text=1
   ballColorPerBounce: true,// la bola cambia de color en cada rebote
   // grabación
   videoBitrate: 16_000_000,
@@ -111,6 +116,11 @@ const CONFIG = {
   if (z > 0) CONFIG.cameraZoom = z;
   if (q.get("loop") === "1") CONFIG.loopMode = true;
   if (q.get("text") === "1") CONFIG.texts = true;
+  if (q.get("multi") === "1") {
+    Object.assign(CONFIG, { multiBall: true, rings: 220, splitAt: [8, 40, 90, 150], ballSpeed: 800,
+                            speedGainPerRing: 1.003, maxSpeed: 1800 });
+    q.set("show", "1");
+  }
   if (q.get("show") === "1") {
     CONFIG.showMode = true; CONFIG.loopMode = true;
     CONFIG.hookTitle = "¿LLEGARÁ A 0?"; CONFIG.hookSub = "no parpadees";
@@ -190,6 +200,7 @@ function newSim(newSeed) {
     shocks: [],                          // ondas expansivas
     shake: 0,
     lastBeat: -1,
+    xballs: [],                          // bolas extra (multibola)
     start: null,
     lastBlip: -1,
     lastCrash: -1,
@@ -215,40 +226,49 @@ function ringHue(i, t) {
 // Física
 // ============================================================================
 function stepPhysics(dt) {
-  const b = S.ball;
   const n = CONFIG.substeps, h = dt / n;
   for (let k = 0; k < n; k++) {
     const t = S.t + k * h;
-    b.x += b.vx * h; b.y += b.vy * h;
-    if (S.current >= CONFIG.rings) continue;       // libre al final
-    const R = ringRadius(S.current);
-    const d = Math.hypot(b.x, b.y);
-    const a = Math.atan2(b.y, b.x);
-    const inGap = Math.abs(wrapPi(a - ringAngle(S.current, t))) < GAP / 2 - (BALL_R / R) * 0.6;
-    if (b.crossing || (d + BALL_R >= R && inGap)) {
-      // atravesando el hueco
-      b.crossing = true;
-      if (d - BALL_R > R + CONFIG.ringWidth) breakRing(t);
-    } else if (d + BALL_R >= R) {
-      // rebote elástico sobre la normal radial
-      const nx = b.x / d, ny = b.y / d;
-      const vn = b.vx * nx + b.vy * ny;
-      if (vn > 0) {
-        b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny;
-        const j = (S.rnd() - 0.5) * 2 * CONFIG.bounceJitterDeg * Math.PI / 180;
-        const c = Math.cos(j), sn = Math.sin(j);
-        let vx = b.vx * c - b.vy * sn, vy = b.vx * sn + b.vy * c;
-        if (vx * nx + vy * ny > 0) { vx = b.vx; vy = b.vy; }   // nunca hacia fuera
-        b.vx = vx; b.vy = vy;
-        onBounce(S.current);
-        S.trail.push({ x: nx * (R - BALL_R), y: ny * (R - BALL_R), h: S.ballHue });
-        if (CONFIG.ballColorPerBounce) { S.ballHue = (S.ballHue + 137.508) % 360; S.ballFlash = 1; }
-      }
-      const rr = R - BALL_R - 1e-3;
-      b.x = nx * rr; b.y = ny * rr;
-    }
+    stepBall(S.ball, true, t, h);
+    for (let i = 0; i < S.xballs.length; i++) stepBall(S.xballs[i], false, t, h);
   }
   S.t += dt;
+}
+
+function stepBall(b, isMain, t, h) {
+  b.x += b.vx * h; b.y += b.vy * h;
+  if (S.current >= CONFIG.rings) return;           // libre al final
+  const R = ringRadius(S.current);
+  const d = Math.hypot(b.x, b.y);
+  const a = Math.atan2(b.y, b.x);
+  const inGap = Math.abs(wrapPi(a - ringAngle(S.current, t))) < GAP / 2 - (BALL_R / R) * 0.6;
+  if (b.crossing || (d + BALL_R >= R && inGap)) {
+    // atravesando el hueco
+    b.crossing = true;
+    if (d - BALL_R > R + CONFIG.ringWidth) breakRing(t);
+  } else if (d + BALL_R >= R) {
+    // rebote elástico sobre la normal radial
+    const nx = b.x / d, ny = b.y / d;
+    const vn = b.vx * nx + b.vy * ny;
+    if (vn > 0) {
+      b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny;
+      const j = (S.rnd() - 0.5) * 2 * CONFIG.bounceJitterDeg * Math.PI / 180;
+      const c = Math.cos(j), sn = Math.sin(j);
+      let vx = b.vx * c - b.vy * sn, vy = b.vx * sn + b.vy * c;
+      if (vx * nx + vy * ny > 0) { vx = b.vx; vy = b.vy; }   // nunca hacia fuera
+      b.vx = vx; b.vy = vy;
+      onBounce(S.current);
+      if (isMain) {
+        S.trail.push({ x: nx * (R - BALL_R), y: ny * (R - BALL_R), h: S.ballHue });
+        if (CONFIG.ballColorPerBounce) { S.ballHue = (S.ballHue + 137.508) % 360; S.ballFlash = 1; }
+      } else {
+        b.trail.push({ x: nx * (R - BALL_R), y: ny * (R - BALL_R), h: b.hue });
+        if (CONFIG.ballColorPerBounce) { b.hue = (b.hue + 137.508) % 360; b.flash = 1; }
+      }
+    }
+    const rr = R - BALL_R - 1e-3;
+    b.x = nx * rr; b.y = ny * rr;
+  }
 }
 
 function breakRing(t) {
@@ -259,6 +279,7 @@ function breakRing(t) {
   S.current++;
   S.alive = CONFIG.rings - S.current;
   S.ball.crossing = false;
+  for (const xb of S.xballs) xb.crossing = false;
   S.pop = 1;
   if (CONFIG.loopMode) {
     S.kick = Math.min(CONFIG.kickMax, S.kick + CONFIG.kickPerRing);
@@ -270,6 +291,12 @@ function breakRing(t) {
   b.speed = Math.min(CONFIG.maxSpeed / CZ, b.speed * CONFIG.speedGainPerRing);
   const v = Math.hypot(b.vx, b.vy);
   b.vx *= b.speed / v; b.vy *= b.speed / v;
+  for (const xb of S.xballs) {                     // todas a la misma velocidad
+    const w = Math.hypot(xb.vx, xb.vy) || 1;
+    xb.vx *= b.speed / w; xb.vy *= b.speed / w;
+  }
+  if (CONFIG.multiBall && S.alive > 0 &&
+      (CONFIG.splitAt ? CONFIG.splitAt.includes(S.current) : S.current % CONFIG.splitEvery === 0)) splitBalls(R);
   onBreak(i);
   if (S.alive === 0) finish();
 }
@@ -295,6 +322,27 @@ function showOnBreak(i, R, t) {
     S.flash = Math.max(S.flash, 0.45);
     onMilestone(S.alive);
   }
+}
+
+function splitBalls(R) {
+  const all = [S.ball, ...S.xballs];
+  if (all.length * 2 > CONFIG.maxBalls) return;
+  const ang = CONFIG.splitAngleDeg * Math.PI / 180;
+  const rot = (b, a) => { const c = Math.cos(a), s_ = Math.sin(a); const vx = b.vx * c - b.vy * s_; b.vy = b.vx * s_ + b.vy * c; b.vx = vx; };
+  for (const b of all) {
+    const isMain = b === S.ball;
+    const hue = isMain ? S.ballHue : b.hue;
+    const nb = { x: b.x, y: b.y, vx: b.vx, vy: b.vy, crossing: false, hue: (hue + 180) % 360,
+                 flash: 1, trail: [], alpha: 1 };
+    rot(b, -ang); rot(nb, ang);
+    S.xballs.push(nb);
+    if (isMain) S.ballFlash = 1; else b.flash = 1;
+  }
+  S.flash = Math.max(S.flash, 0.55);
+  S.shake = 1;
+  S.kick = CONFIG.kickMax;
+  S.shocks.push({ r: R, t0: S.t });
+  onSplit(all.length * 2);
 }
 
 function finish() {
@@ -439,6 +487,9 @@ function draw() {
     ctx.globalAlpha = 1;
   }
 
+  // --- bolas extra (multibola) ---
+  for (const xb of S.xballs) drawExtraBall(xb, z);
+
   // --- pelota ---
   const b = S.ball;
   const fl = S.ballFlash || 0;
@@ -483,6 +534,27 @@ function draw() {
   }
 }
 
+function drawExtraBall(xb, z) {
+  if (xb.alpha <= 0.01) return;
+  const tr = xb.trail, nT = tr.length;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.globalCompositeOperation = "lighter";
+  for (let j = 1; j < nT; j++) {
+    const f = j / (nT - 1);
+    ctx.globalAlpha = f * f * 0.9 * xb.alpha;
+    ctx.lineWidth = (2 + 7 * f) / z;
+    ctx.strokeStyle = `hsl(${tr[j].h},100%,${60 + 25 * f}%)`;
+    ctx.beginPath(); ctx.moveTo(tr[j - 1].x, tr[j - 1].y); ctx.lineTo(tr[j].x, tr[j].y); ctx.stroke();
+  }
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = xb.alpha;
+  ctx.fillStyle = `hsl(${xb.hue},100%,${72 + 20 * xb.flash}%)`;
+  ctx.shadowColor = `hsl(${xb.hue},100%,60%)`;
+  ctx.shadowBlur = 18 + 30 * xb.flash;
+  ctx.beginPath(); ctx.arc(xb.x, xb.y, Math.max(BALL_R, 3 / z) * (1 + 0.7 * xb.flash), 0, TAU); ctx.fill();
+  ctx.restore();
+}
 function drawShow() {
   // tensión: viñeta roja que late en los últimos anillos
   if (S.alive > 0 && S.alive <= CONFIG.tensionRings) {
@@ -605,6 +677,11 @@ function tick(dt) {
   S.trail.push({ x: S.ball.x, y: S.ball.y, h: S.ballHue });
   while (S.trail.length > CONFIG.trailLength) S.trail.shift();
   S.ballFlash = Math.max(0, S.ballFlash - dt * 7);
+  for (const xb of S.xballs) {
+    xb.trail.push({ x: xb.x, y: xb.y, h: xb.hue });
+    while (xb.trail.length > CONFIG.trailLength * 0.6) xb.trail.shift();
+    xb.flash = Math.max(0, xb.flash - dt * 7);
+  }
   stepParticles(sdt);
   updateCamera(sdt);
   S.pop = Math.max(0, S.pop - dt * 6);
@@ -646,6 +723,10 @@ function stepRewind(dt) {
   S.ceff = Math.min(S.current, CONFIG.rings - 1) * (1 - e) + 0 * e;
   if (S.current < R.last) { S.pop = 0.6; R.last = S.current; }
   // la pelota vuelve a su posición inicial
+  for (const xb of S.xballs) {
+    xb.alpha = Math.max(0, 1 - R.p / 0.35);
+    xb.x += (S.ball.x - xb.x) * 0.15; xb.y += (S.ball.y - xb.y) * 0.15; xb.trail = [];
+  }
   S.ball.x = R.bx + (S.start.x - R.bx) * e;
   S.ball.y = R.by + (S.start.y - R.by) * e;
   S.trail.push({ x: S.ball.x, y: S.ball.y, h: S.ballHue });
@@ -662,6 +743,7 @@ function stepRewind(dt) {
     S.current = 0; S.alive = CONFIG.rings; S.ceff = 0; S.te = 0; S.zoom = 1; S.kick = 0;
     S.ball.x = S.start.x; S.ball.y = S.start.y; S.trail = [];
     S.ballHue = S.start.hue; S.ballFlash = 0;
+    S.xballs = [];
     S.pop = 0; S.flash = 0;
     S.popups = []; S.shocks = []; S.shake = 0; S.combo = 0;
     S.loopDone = true;
@@ -709,6 +791,7 @@ function onBounce(ring) {
 }
 function onBreak(ring) {
   if (!AC || muted) return;
+  if (CONFIG.multiBall) melodyNote(ring);
   const now = AC.currentTime;
   if (now - S.lastCrash < 0.07) return;            // ráfagas: un solo crash cada 70 ms
   S.lastCrash = now;
@@ -771,6 +854,33 @@ function onHeartbeat() {
     g.gain.exponentialRampToValueAtTime(amp, now + dt + 0.01);
     g.gain.exponentialRampToValueAtTime(0.0001, now + dt + 0.22);
     o.connect(g); g.connect(master); o.start(now + dt); o.stop(now + dt + 0.25);
+  }
+}
+function onSplit(n) {
+  if (!AC || muted) return;
+  const t = AC.currentTime;
+  [0, 4, 7, 12, 16].forEach((st, i) => {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = "square"; o.frequency.value = 523.25 * Math.pow(2, (st + Math.log2(n) * 2) / 12);
+    g.gain.setValueAtTime(0.0001, t + i * 0.05); g.gain.exponentialRampToValueAtTime(0.12, t + i * 0.05 + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.05 + 0.2);
+    o.connect(g); g.connect(master); o.start(t + i * 0.05); o.stop(t + i * 0.05 + 0.22);
+  });
+}
+// melodía original (pentatónica menor) que avanza con cada anillo roto
+const MELODY = [0, 3, 7, 10, 12, 10, 7, 3, 5, 8, 12, 15, 17, 15, 12, 8, 7, 10, 14, 17, 19, 17, 14, 10, 12, 15, 19, 22, 24, 19, 15, 12];
+function melodyNote(ring) {
+  if (!AC || muted || !CONFIG.melody) return;
+  const t = AC.currentTime;
+  if (t - (S.lastNote || -1) < 0.045) return;
+  S.lastNote = t;
+  const f = 220 * Math.pow(2, MELODY[ring % MELODY.length] / 12);
+  for (const [mul, amp, type] of [[1, 0.22, "triangle"], [2, 0.07, "sine"]]) {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type; o.frequency.value = f * mul;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(amp, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.37);
   }
 }
 function onRewind() {

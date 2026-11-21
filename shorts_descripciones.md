@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## ring_multiball_seed9.mp4 (rings_sim/renders)
+**Title (EN):** 1 ball became 16… and broke 220 rings 🌈💥
+
+The ball splits in two every time it levels up: 1 → 2 → 4 → 8 → 16 balls tearing through 220 spinning rings 🔥
+Every ring plays the next note of the song 🎶 Turn the sound on 🔊
+Wait for the final split… then watch it loop 🔁
+
+#shorts #satisfying #multiball #oddlysatisfying #asmr
+
+**Título (ES):** 1 bola se convirtió en 16… y rompió 220 anillos 🌈💥
+
+La bola se divide en dos cada vez que sube de nivel: 1 → 2 → 4 → 8 → 16 bolas atravesando 220 anillos que giran 🔥
+Cada anillo toca la siguiente nota de la canción 🎶 Sube el volumen 🔊
+Espera a la última división… y mira cómo vuelve a empezar 🔁
+
+#shorts #satisfying #multiball #oddlysatisfying #asmr
+
 ## balls_multi_seed20.mp4 (shuriken_sim/renders)
 **Título:** ¿Cuántas bolas hacen falta para destruir 260 bloques? 🔥
 
