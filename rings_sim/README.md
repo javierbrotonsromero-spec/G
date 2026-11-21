@@ -48,6 +48,14 @@ destello, onda expansiva y arpegio de "power-up". Cada anillo roto toca la sigui
 melodía (pentatónica menor), así que las ráfagas suenan como arpegios. 220 anillos.
 Vídeo: `index.html?multi=1&zoom=4.5&seed=9` (≈29 s; divisiones a los 0,3 / 7,8 / 15,5 / 23,5 s).
 
+## Modo hyper (`?hyper=1`, incluye multibola, show y bucle)
+240 anillos y hasta 32 bolas (divisiones al romper 6, 30, 70, 115 y 165 anillos). En cada división:
+**tiempo bala** (la acción se congela 0,4 s a cámara superlenta) y **reacción en cadena** que rompe
+4 anillos seguidos (glissando melódico). Al 26 % de anillos rotos llega el **"drop"**: riser de
+tensión, destello en negativo, la paleta salta al color complementario y la música entra en su
+parte intensa. Al quedar 12 anillos, **final en cascada**.
+Vídeo: `index.html?hyper=1&zoom=4.5&seed=6` (≈37 s).
+
 ## Zoom de cámara
 `?zoom=N` acerca la cámara (×1,9, ×3, ×4,5…) escalando la física para que el ritmo no cambie.
 

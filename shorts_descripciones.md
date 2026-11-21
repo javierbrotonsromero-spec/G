@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## ring_hyper_seed6.mp4 (rings_sim/renders)
+**Title (EN):** 1 ball → 32 balls vs 240 rings 🤯 (wait for the drop)
+
+Every split freezes time… then everything explodes 💥 1 → 2 → 4 → 8 → 16 → 32 balls tearing through 240 rings 🌈
+Every ring plays a note 🎶 Sound ON for the drop 🔊
+Watch till the final chain reaction… it loops forever 🔁
+
+#shorts #satisfying #multiball #oddlysatisfying #asmr
+
+**Título (ES):** 1 bola → 32 bolas contra 240 anillos 🤯 (espera al drop)
+
+Cada división congela el tiempo… y luego todo explota 💥 1 → 2 → 4 → 8 → 16 → 32 bolas atravesando 240 anillos 🌈
+Cada anillo toca una nota 🎶 Sube el volumen para el drop 🔊
+Mira hasta la reacción en cadena final… se repite para siempre 🔁
+
+#shorts #satisfying #multiball #oddlysatisfying #asmr
+
 ## ring_multiball_seed9.mp4 (rings_sim/renders)
 **Title (EN):** 1 ball became 16… and broke 220 rings 🌈💥
 
