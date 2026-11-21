@@ -14,3 +14,10 @@ escena idéntica al primer fotograma (bucle perfecto).
 - Parámetros en `CONFIG`: columnas/filas, tamaño de bloque, probabilidad de bloques duros,
   tamaño/velocidad/giro del shuriken, partículas, cámara lenta, rebobinado.
 - Otras semillas con buena duración: 1 (≈33 s), 11 (≈37 s), 3 (≈44 s).
+
+## Modo multi (`?mode=multi`)
+Variante con escalada: torre de 260 bloques (10 × 26) en paleta cálida (rojo → naranja → amarillo).
+Cuatro bloques **dorados con estrella** (filas 5, 10, 15 y 20) multiplican: al cortarlos nace un
+shuriken nuevo (hasta 5), de otro color, que sale en dirección contraria y vuela un carril más
+arriba, con un arpegio de "power-up". Vídeo: `index.html?mode=multi&seed=20` (≈29 s, los
+shurikens extra aparecen a los 2, 10, 17 y 21 s). Otras semillas: 24 y 53 (≈38 s).
