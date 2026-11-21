@@ -9,6 +9,15 @@ Cuenta cuántas veces cambia de color 👀
 
 #shorts #satisfying #simulation #oddlysatisfying #asmr
 
+### English
+**Title:** How many balls does it take to destroy 260 blocks? 🔥
+
+One ball starts alone against a tower of 260 blocks… but every golden star it breaks releases a new ball. 1, 2, 3, 4… up to 5 balls smashing everything! 💥
+Count how many times it changes color 👀
+Will it reach 0? Watch till the end… and again 🔁
+
+#shorts #satisfying #simulation #oddlysatisfying #asmr
+
 ## shuriken_multi_seed20.mp4 (shuriken_sim/renders)
 **Título:** Cada estrella dorada = un shuriken más 🥷⭐
 
