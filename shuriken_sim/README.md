@@ -21,3 +21,7 @@ Cuatro bloques **dorados con estrella** (filas 5, 10, 15 y 20) multiplican: al c
 shuriken nuevo (hasta 5), de otro color, que sale en dirección contraria y vuela un carril más
 arriba, con un arpegio de "power-up". Vídeo: `index.html?mode=multi&seed=20` (≈29 s, los
 shurikens extra aparecen a los 2, 10, 17 y 21 s). Otras semillas: 24 y 53 (≈38 s).
+
+## Bolas en lugar de shurikens (`&proj=ball`)
+Misma física (y mismo desarrollo con la misma semilla), pero con bolas neón brillantes con estela de
+color y sonido de "pop" en lugar del corte metálico. Vídeo: `index.html?mode=multi&proj=ball&seed=20`.

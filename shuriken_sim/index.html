@@ -64,6 +64,7 @@ const CONFIG = {
   rewindDelay: 0.9, rewindTime: 1.8,
   // modo "multi" (?mode=multi): bloques dorados que multiplican shurikens
   multi: false,
+  ball: false,                 // ?proj=ball: bolas neón en lugar de shurikens (misma física)
   bonusRows: [5, 10, 15, 20],   // filas con un bloque dorado (uno por fila, columna al azar)
   maxShurikens: 5,
   counterFont: '900 150px "Montserrat", "Arial Black", Arial, sans-serif',
@@ -71,6 +72,7 @@ const CONFIG = {
 };
 
 { const q = new URLSearchParams(location.search);
+  if (q.get("proj") === "ball") Object.assign(CONFIG, { ball: true, afterimages: 16 });
   if (q.get("mode") === "multi") Object.assign(CONFIG, {
     multi: true, cols: 10, rows: 26, block: 96, gap: 8,
     hueTop: 345, hueSpan: 75,                     // rojo abajo -> naranja -> amarillo arriba
@@ -366,7 +368,40 @@ function resetToStart() {
 // ============================================================================
 // Dibujo
 // ============================================================================
+function drawBall(x, y, hue, alpha, flash) {
+  const r = CONFIG.hitRadius + 4;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+  g.addColorStop(0, `hsl(${hue},100%,${88 + 10 * flash}%)`);
+  g.addColorStop(0.45, `hsl(${hue},100%,${62 + 15 * flash}%)`);
+  g.addColorStop(1, `hsl(${hue},100%,${34 + 10 * flash}%)`);
+  ctx.fillStyle = g;
+  ctx.shadowColor = `hsl(${hue},100%,60%)`;
+  ctx.shadowBlur = 30 + 40 * flash;
+  ctx.beginPath(); ctx.arc(x, y, r * (1 + 0.25 * flash), 0, TAU); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(255,255,255,.85)";
+  ctx.beginPath(); ctx.ellipse(x - r * 0.35, y - r * 0.42, r * 0.22, r * 0.14, -0.6, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+function drawTrail(pts, alphaMul) {
+  // estela de la bola: segmentos con grosor y opacidad crecientes hacia la cabeza
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.globalCompositeOperation = "lighter";
+  const n = pts.length;
+  for (let i = 1; i < n; i++) {
+    const f = i / (n - 1);
+    ctx.globalAlpha = f * f * 0.6 * alphaMul;
+    ctx.lineWidth = (CONFIG.hitRadius + 4) * 2 * (0.25 + 0.7 * f);
+    ctx.strokeStyle = `hsl(${pts[i].hue},100%,60%)`;
+    ctx.beginPath(); ctx.moveTo(pts[i - 1].x, pts[i - 1].y); ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke();
+  }
+  ctx.restore();
+}
 function drawShuriken(x, y, ang, hue, alpha, flash) {
+  if (CONFIG.ball) return drawBall(x, y, hue, alpha, flash);
   const r = CONFIG.radius;
   ctx.save();
   ctx.translate(x, y);
@@ -502,13 +537,17 @@ function draw() {
   // shuriken con imágenes residuales
   const y = shY();
   ctx.globalCompositeOperation = "lighter";
-  for (let i = 0; i < S.after.length - 1; i++) {
+  if (CONFIG.ball) drawTrail(S.after, 1);
+  else for (let i = 0; i < S.after.length - 1; i++) {
     const a = S.after[i];
     drawShuriken(a.x, a.y, a.a, a.hue, 0.08 + 0.22 * (i / S.after.length), 0);
   }
-  for (const sh of S.extra) for (let i = 0; i < sh.after.length - 1; i++) {
-    const a = sh.after[i];
-    drawShuriken(a.x, a.y, a.a, a.hue, (0.08 + 0.22 * (i / sh.after.length)) * sh.alpha, 0);
+  for (const sh of S.extra) {
+    if (CONFIG.ball) { drawTrail(sh.after, sh.alpha); continue; }
+    for (let i = 0; i < sh.after.length - 1; i++) {
+      const a = sh.after[i];
+      drawShuriken(a.x, a.y, a.a, a.hue, (0.08 + 0.22 * (i / sh.after.length)) * sh.alpha, 0);
+    }
   }
   ctx.globalCompositeOperation = "source-over";
   for (const sh of S.extra) if (sh.alpha > 0.01) drawShuriken(sh.x, shY(sh), sh.ang, sh.hue, sh.alpha, sh.flash);
@@ -580,7 +619,8 @@ const PENTA = [0, 2, 4, 7, 9, 12, 14, 16];
 function onSlice(b) {
   if (!AC || muted) return;
   const t = AC.currentTime; if (t - S.lastSlice < 0.03) return; S.lastSlice = t;
-  noiseHit(t, 7000, 2500, 0.18, 0.45, "highpass");                        // "shing"
+  if (CONFIG.ball) ping(t, 220, 0.09, 0.35, "sine");                     // "pop" de la bola
+  else noiseHit(t, 7000, 2500, 0.18, 0.45, "highpass");                   // "shing"
   ping(t, 880 * Math.pow(2, PENTA[S.killed % 8] / 12), 0.22, 0.16, "triangle");
   noiseHit(t, 1400, 200, 0.3, 0.35, "lowpass");                           // crujido
 }
