@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## duel_sword_vs_dagger_seed29.mp4 (duel_sim/renders)
+**Title (EN):** SWORD vs DAGGER ⚔️ Who wins? (every hit makes them stronger)
+
+Sword gets +1 damage every hit 🗡️ Dagger spins faster every hit 🌀
+15 lead changes… the ending is INSANE 🤯
+Pick your side in the comments before it ends 👇🔴🔵
+
+#shorts #satisfying #ballbattle #sword #whowins #oddlysatisfying
+
+**Título (ES):** ESPADA vs DAGA ⚔️ ¿Quién gana? (cada golpe los hace más fuertes)
+
+La espada gana +1 de daño en cada golpe 🗡️ La daga gira más rápido en cada golpe 🌀
+15 cambios de líder… el final es una LOCURA 🤯
+Elige tu bando en comentarios antes de que acabe 👇🔴🔵
+
+#shorts #satisfying #batalladebolas #espada #quiengana #oddlysatisfying
+
 ## string_burst_seed3.mp4 (string_sim/renders)
 **Title (EN):** Every bounce ties a string… until it EXPLODES 🤯🧵
 
