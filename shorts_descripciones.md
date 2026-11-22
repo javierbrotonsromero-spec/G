@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## ring_ultra_seed9.mp4 (rings_sim/renders)
+**Title (EN):** 1 ball → 64 balls → 1 MEGA BALL 🤯 280 rings (wait for the drop)
+
+The whole map pulses to the beat 🎵 Every split freezes time… then the DROP hits and a rainbow wave tears through 280 rings 🌈💥
+At the end all 64 balls merge into one MEGA BALL… and BOOM 💣
+Sound ON 🔊 It loops forever 🔁 How many times did you watch it?
+
+#shorts #satisfying #oddlysatisfying #multiball #asmr #loop
+
+**Título (ES):** 1 bola → 64 bolas → 1 MEGA BOLA 🤯 280 anillos (espera al drop)
+
+Todo el mapa late al ritmo 🎵 Cada división congela el tiempo… llega el DROP y una ola arcoíris arrasa 280 anillos 🌈💥
+Al final las 64 bolas se fusionan en una MEGA BOLA… y BOOM 💣
+Sube el volumen 🔊 Es un bucle infinito 🔁 ¿Cuántas veces lo has visto?
+
+#shorts #satisfying #oddlysatisfying #multibola #asmr #loop
+
 ## ring_hyper_seed6.mp4 (rings_sim/renders)
 **Title (EN):** 1 ball → 32 balls vs 240 rings 🤯 (wait for the drop)
 

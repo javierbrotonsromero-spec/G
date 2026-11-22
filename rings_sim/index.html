@@ -112,7 +112,12 @@ const CONFIG = {
   cascadeOnSplit: 4,       // anillos que rompe la onda de cada división
   cascadeGap: 0.045,       // s entre anillos de una cascada
   dropAt: 0.26,            // fracción de anillos rotos: destello invertido, la paleta salta al complementario
-  finalCascade: 12,        // al quedar estos anillos, explotan todos en cadena            // textos superpuestos (gancho, combos, hitos, "ESCAPE %"); ?text=1
+  finalCascade: 12,        // al quedar estos anillos, explotan todos en cadena
+  // modo ultra (?ultra=1, incluye hyper): todo late al ritmo, drop en el primer tiempo del compás,
+  // ola arcoíris tras el drop, hasta 64 bolas y fusión final en una bola gigante
+  ultra: false,
+  bpm: 124,                // se ajusta desde la URL (?bpm=) para que la música empalme en el bucle
+  beatPulse: 1,            // textos superpuestos (gancho, combos, hitos, "ESCAPE %"); ?text=1
   ballColorPerBounce: true,// la bola cambia de color en cada rebote
   // grabación
   videoBitrate: 16_000_000,
@@ -123,6 +128,8 @@ const CONFIG = {
   if (z > 0) CONFIG.cameraZoom = z;
   if (q.get("loop") === "1") CONFIG.loopMode = true;
   if (q.get("text") === "1") CONFIG.texts = true;
+  if (q.get("ultra") === "1") { CONFIG.ultra = true; q.set("hyper", "1"); }
+  if (Number(q.get("bpm")) > 0) CONFIG.bpm = Number(q.get("bpm"));
   if (q.get("hyper") === "1") {
     CONFIG.hyper = true; q.set("multi", "1");
   }
@@ -132,6 +139,8 @@ const CONFIG = {
     q.set("show", "1");
     if (CONFIG.hyper) Object.assign(CONFIG, { rings: 240, maxBalls: 32, splitAt: [6, 30, 70, 115, 165],
                                               ballSpeed: 760, speedGainPerRing: 1.002, maxSpeed: 1500 });
+    if (CONFIG.ultra) Object.assign(CONFIG, { rings: 280, maxBalls: 64, splitAt: [6, 28, 62, 105, 155, 210],
+                                              rewindDelay: 1.5 });
   }
   if (q.get("show") === "1") {
     CONFIG.showMode = true; CONFIG.loopMode = true;
@@ -216,6 +225,8 @@ function newSim(newSeed) {
     cascade: 0, cascadeT: 0,             // anillos pendientes de romper en cadena
     bullet: 0,                           // tiempo bala restante
     hueShift: 0, dropped: false, invert: 0,
+    vt: 0,                               // tiempo de vídeo (para el ritmo)
+    dropPending: false, rainbow: 0, mega: 0, merged: false,
     start: null,
     lastBlip: -1,
     lastCrash: -1,
@@ -310,7 +321,8 @@ function breakRing(t) {
     const w = Math.hypot(xb.vx, xb.vy) || 1;
     xb.vx *= b.speed / w; xb.vy *= b.speed / w;
   }
-  if (CONFIG.hyper && !S.dropped && S.current >= CONFIG.rings * CONFIG.dropAt) {
+  if (CONFIG.ultra && !S.dropped && !S.dropPending && S.current >= CONFIG.rings * CONFIG.dropAt) S.dropPending = true;
+  if (CONFIG.hyper && !CONFIG.ultra && !S.dropped && S.current >= CONFIG.rings * CONFIG.dropAt) {
     S.dropped = true; S.invert = 0.14; S.flash = 1; S.shake = 1; S.kick = CONFIG.kickMax;
     S.shocks.push({ r: R, t0: S.t });
     onDrop();
@@ -345,6 +357,18 @@ function showOnBreak(i, R, t) {
   }
 }
 
+function beatPos() { return S.vt * CONFIG.bpm / 60; }        // en pulsos
+function beatPulse() {
+  if (!CONFIG.ultra) return 0;
+  const ph = beatPos() % 1;
+  return Math.exp(-ph * 7) * CONFIG.beatPulse * (S.dropped ? 1 : 0.55);
+}
+function doDrop() {
+  S.dropped = true; S.dropPending = false;
+  S.invert = 0.14; S.flash = 1; S.shake = 1; S.kick = CONFIG.kickMax;
+  S.shocks.push({ r: ringRadius(Math.min(S.current, CONFIG.rings - 1)), t0: S.t });
+  onDrop();
+}
 function splitBalls(R) {
   const all = [S.ball, ...S.xballs];
   if (all.length * 2 > CONFIG.maxBalls) return;
@@ -433,7 +457,8 @@ function updateCamera(dt) {
 // Dibujo
 // ============================================================================
 function draw() {
-  const z = S.zoom * CZ * (1 + S.kick), t = S.te;
+  const bp = beatPulse();
+  const z = S.zoom * CZ * (1 + S.kick + 0.03 * bp), t = S.te;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
@@ -449,14 +474,19 @@ function draw() {
   const lw = Math.max(CONFIG.ringWidth * Math.min(z, 1) * Math.pow(Math.max(CZ, 1), 0.6), 1.0) / z;
   const glowPass = CONFIG.glow;
   for (let pass = glowPass ? 0 : 1; pass < 2; pass++) {
-    ctx.lineWidth = pass === 0 ? lw * 3.2 : lw;
+    ctx.lineWidth = (pass === 0 ? lw * 3.2 : lw) * (1 + 0.45 * bp);
     ctx.globalAlpha = pass === 0 ? 0.16 : 1;
     for (let i = S.current; i < CONFIG.rings; i++) {
       const R = ringRadius(i);
       if (R > maxR) break;
       if (R * z < 1.5) continue;
       const a = ringAngle(i, t);
-      ctx.strokeStyle = `hsl(${ringHue(i, t)},100%,${pass === 0 ? 60 : 56}%)`;
+      let hue = ringHue(i, t);
+      if (S.rainbow > 0.001) {                       // ola arcoíris hacia fuera
+        const wave = (i * 9 - S.vt * 260) % 360;
+        hue = (hue + S.rainbow * (wave + 360)) % 360;
+      }
+      ctx.strokeStyle = `hsl(${hue},100%,${(pass === 0 ? 60 : 56) + 18 * bp}%)`;
       ctx.beginPath();
       ctx.arc(0, 0, R, a + GAP / 2, a - GAP / 2 + TAU);
       ctx.stroke();
@@ -522,6 +552,17 @@ function draw() {
   ctx.arc(b.x, b.y, Math.max(BALL_R, 3 / z) * (1 + 0.7 * fl), 0, TAU);
   ctx.fill();
   ctx.shadowBlur = 0;
+
+  // --- bola gigante de la fusión final ---
+  if (CONFIG.ultra && S.mega > 0) {
+    ctx.setTransform(z, 0, 0, z, CX, CY);
+    const r = (BALL_R * 2 + (W * 0.2 / z) * S.mega * S.mega) * (1 + 0.15 * bp);
+    const g = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+    const hh = (S.t * 400) % 360;
+    g.addColorStop(0, "#fff"); g.addColorStop(0.5, `hsl(${hh},100%,65%)`); g.addColorStop(1, `hsl(${(hh + 90) % 360},100%,40%)`);
+    ctx.fillStyle = g; ctx.shadowColor = `hsl(${hh},100%,60%)`; ctx.shadowBlur = 60;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill(); ctx.shadowBlur = 0;
+  }
 
   // --- "drop": negativo de un instante ---
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -711,6 +752,13 @@ function tick(dt) {
       breakRing(S.t);
     }
   }
+  if (CONFIG.ultra) {
+    const b0 = Math.floor(beatPos() / 4);
+    S.vt += dt;
+    if (S.dropPending && Math.floor(beatPos() / 4) > b0) doDrop();   // en el primer tiempo del compás
+    S.rainbow += ((S.dropped ? 1 : 0) - S.rainbow) * (1 - Math.exp(-3 * dt));
+    if (S.finished) stepMerge(dt);
+  }
   if (CONFIG.hyper) {
     S.invert = Math.max(0, S.invert - dt);
     const target = S.dropped ? 180 : 0;
@@ -757,12 +805,30 @@ function startRewind() {
   S.trail = [];
   onRewind();
 }
+function stepMerge(dt) {
+  // todas las bolas se precipitan al centro y se funden en una bola gigante que estalla
+  const k = S.t - S.finishT;
+  const all = [S.ball, ...S.xballs];
+  if (k < 0.75) {
+    for (const b of all) { b.x *= Math.exp(-7 * dt); b.y *= Math.exp(-7 * dt); b.vx = b.vy = 0; }
+    S.mega = Math.min(1, k / 0.75);
+  } else if (!S.merged) {
+    S.merged = true; S.mega = 0; S.flash = 1; S.shake = 1; S.kick = CONFIG.kickMax;
+    for (const xb of S.xballs) xb.alpha = 0;
+    for (let k2 = 0; k2 < 5; k2++)
+      spawnRingParticles(0, ringRadius(CONFIG.rings - 1) * 0.25 * (1 + k2 * 0.4), (S.ballHue + k2 * 72) % 360, null, 500, 2.4);
+    S.shocks.push({ r: 10, t0: S.t });
+    onMerge();
+  }
+}
 function stepRewind(dt) {
   const R = S.rewind;
+  if (CONFIG.ultra) S.vt += dt;
   R.p = Math.min(1, R.p + dt / CONFIG.rewindTime);
   const e = R.p < 0.5 ? 4 * R.p ** 3 : 1 - (-2 * R.p + 2) ** 3 / 2;   // easeInOutCubic
   // giro y color hacia atrás hasta t = 0
   S.te = R.te0 * (1 - e);
+  if (CONFIG.ultra) S.rainbow *= (1 - e);
   if (CONFIG.hyper) { S.hueShift = R.hs0 === undefined ? (R.hs0 = S.hueShift) * (1 - e) : R.hs0 * (1 - e); S.invert = 0; }
   // los anillos vuelven de fuera hacia dentro
   S.current = Math.round(CONFIG.rings * (1 - e));
@@ -792,6 +858,7 @@ function stepRewind(dt) {
     S.ballHue = S.start.hue; S.ballFlash = 0;
     S.xballs = [];
     S.hueShift = 0; S.dropped = false; S.cascade = 0; S.bullet = 0; S.invert = 0;
+    S.rainbow = 0; S.mega = 0; S.merged = false; S.dropPending = false; S.vt = 0;
     S.pop = 0; S.flash = 0;
     S.popups = []; S.shocks = []; S.shake = 0; S.combo = 0;
     S.loopDone = true;
@@ -939,6 +1006,10 @@ function onDrop() {
   g.gain.setValueAtTime(0.9, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.3);
   o.connect(g); g.connect(master); o.start(t); o.stop(t + 1.35);
   onBreak(0);
+}
+function onMerge() {
+  if (!AC || muted) return;
+  onDrop();
 }
 function onRewind() {
   if (!AC || muted) return;

@@ -56,6 +56,16 @@ tensión, destello en negativo, la paleta salta al color complementario y la mú
 parte intensa. Al quedar 12 anillos, **final en cascada**.
 Vídeo: `index.html?hyper=1&zoom=4.5&seed=6` (≈37 s).
 
+## Modo ultra (`?ultra=1`, incluye hyper)
+Lo más dopamínico: 280 anillos y hasta 64 bolas.
+- **Pulso al beat**: todo el mapa late con la música (zoom, grosor y brillo de los anillos) a `?bpm=`.
+- **Drop cuantizado**: el gran momento cae justo en el primer tiempo del compás.
+- **Ola arcoíris** tras el drop recorriendo todos los anillos.
+- **Mega fusión final**: las bolas convergen al centro, forman una mega bola y explotan antes del rebobinado.
+- Bucle perfecto: la duración se ajusta a compases enteros (`bpm = beats*60/D`).
+
+Vídeo: `renders/ring_ultra_seed9.mp4` → `index.html?ultra=1&zoom=4.5&seed=9&bpm=122.92`
+
 ## Zoom de cámara
 `?zoom=N` acerca la cámara (×1,9, ×3, ×4,5…) escalando la física para que el ritmo no cambie.
 
