@@ -1,5 +1,20 @@
 # Descripciones para YouTube Shorts
 
+## string_burst_seed3.mp4 (string_sim/renders)
+**Title (EN):** Every bounce ties a string… until it EXPLODES 🤯🧵
+
+Every bounce adds a neon string and makes the ball bigger 🌈 The bigger it gets, the faster it bounces… 202 strings later it fills the circle and BOOM 💥 Then it rewinds 🔁
+Every string plays a note 🎶 Sound ON 🔊 Did you catch the loop?
+
+#shorts #satisfying #oddlysatisfying #loop #asmr #stringart
+
+**Título (ES):** Cada rebote ata un hilo… hasta que EXPLOTA 🤯🧵
+
+Cada rebote añade un hilo de neón y hace la bola más grande 🌈 Cuanto más crece, más rápido rebota… 202 hilos después llena el círculo y BOOM 💥 Y se rebobina 🔁
+Cada hilo toca una nota 🎶 Sube el volumen 🔊 ¿Has pillado el bucle?
+
+#shorts #satisfying #oddlysatisfying #loop #asmr #arteconhilos
+
 ## ring_ultra_seed9.mp4 (rings_sim/renders)
 **Title (EN):** 1 ball → 64 balls → 1 MEGA BALL 🤯 280 rings (wait for the drop)
 

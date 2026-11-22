@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>String Burst</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font: 20px system-ui, sans-serif; background: rgba(0,0,0,.55); cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="start">Click para empezar (R reinicia)</div>
+<script>
+// ---------------------------------------------------------------------------
+// String Burst: a ball bounces inside a circle. Every bounce ties a neon string
+// from the contact point to the ball, the ball grows and changes colour, every
+// string twangs. When the ball fills the circle it bursts and the whole thing
+// rewinds to the exact first frame: a perfect loop.
+// URL: ?seed=N  ?grow=2.2  ?g=4000  ?speed=1600
+// ---------------------------------------------------------------------------
+const Q = new URLSearchParams(location.search);
+const CONFIG = {
+  seed: +(Q.get('seed') || 1),
+  W: 1080, H: 1920,
+  cx: 540, cy: 900, R: 470,           // arena
+  r0: 18,                              // initial ball radius
+  grow: +(Q.get('grow') || 2.2),       // px per counted bounce
+  cooldown: 0.07,                      // min seconds between counted bounces
+  gravity: +(Q.get('g') || 4000),
+  startVel: [+(Q.get('speed') || 1600), 0],
+  startPos: [0, -200],                 // relative to centre
+  jitter: 0.06,                        // radians of random deflection per bounce
+  hueStep: 47,                         // ball hue change per bounce
+  substeps: 10,
+  endGap: 8,                           // burst when R - r < endGap
+  burstTime: 0.85, rewindTime: 1.6,
+  twang: 16, twangDecay: 7, twangFreq: 26,
+  counterFont: '900 112px "Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif',
+};
+
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+let onBounce = () => {}, onBurst = () => {}, onRewind = () => {};
+let S;
+function newSim() {
+  return {
+    rnd: mulberry32(CONFIG.seed), t: 0, phase: 'play',
+    x: CONFIG.startPos[0], y: CONFIG.startPos[1], vx: CONFIG.startVel[0], vy: CONFIG.startVel[1],
+    r: CONFIG.r0, hue: 190, count: 0, lastCount: -1, lastBounceT: -10,
+    strings: [], ripples: [], parts: [], hist: [], phaseT: 0, flash: 0, pulse: 0,
+    view: null, loopDone: false,
+  };
+}
+S = newSim();
+
+function rimHit(nx, ny) {
+  const c = CONFIG;
+  S.count++; S.lastCount = S.t; S.lastBounceT = S.t;
+  S.r = Math.min(S.r + c.grow, c.R - 1);
+  S.hue = (S.hue + c.hueStep) % 360;
+  S.strings.push({ a: Math.atan2(ny, nx), hue: S.hue, ph: S.rnd() * 6.283 });
+  S.ripples.push({ a: Math.atan2(ny, nx), t: 0, hue: S.hue });
+  for (let k = 0; k < 10; k++) {
+    const a = Math.atan2(ny, nx) + Math.PI + (S.rnd() - 0.5) * 2.2, sp = 250 + S.rnd() * 650;
+    S.parts.push({ x: nx * c.R, y: ny * c.R, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.45 + S.rnd() * 0.3, t: 0, hue: S.hue, s: 3 + S.rnd() * 3 });
+  }
+  S.pulse = 1;
+  onBounce(S.count, (S.r - c.r0) / (c.R - c.endGap - c.r0));
+}
+
+function stepPhysics(dt) {
+  const c = CONFIG, h = dt / c.substeps;
+  for (let s = 0; s < c.substeps; s++) {
+    S.vy += c.gravity * h; S.x += S.vx * h; S.y += S.vy * h;
+    const d = Math.hypot(S.x, S.y), lim = c.R - S.r;
+    if (d > lim) {
+      const nx = S.x / d, ny = S.y / d;
+      S.x = nx * lim; S.y = ny * lim;
+      const vn = S.vx * nx + S.vy * ny;
+      if (vn > 0) {
+        S.vx -= 2 * vn * nx; S.vy -= 2 * vn * ny;
+        const a = (S.rnd() - 0.5) * c.jitter, co = Math.cos(a), si = Math.sin(a);
+        const vx = S.vx * co - S.vy * si; S.vy = S.vx * si + S.vy * co; S.vx = vx;
+        if (S.t - S.lastCount >= c.cooldown) rimHit(nx, ny);
+      }
+    }
+  }
+}
+
+function burst() {
+  const c = CONFIG;
+  S.phase = 'burst'; S.phaseT = 0; S.flash = 1;
+  for (const st of S.strings) {
+    const ex = Math.cos(st.a) * c.R, ey = Math.sin(st.a) * c.R;
+    for (let k = 0; k < 6; k++) {
+      const u = S.rnd(), px = S.x + (ex - S.x) * u, py = S.y + (ey - S.y) * u;
+      const a = Math.atan2(py, px) + (S.rnd() - 0.5) * 0.8, sp = 500 + S.rnd() * 1500;
+      S.parts.push({ x: px, y: py, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5 + S.rnd() * 0.5, t: 0, hue: st.hue, s: 3 + S.rnd() * 4 });
+    }
+  }
+  onBurst();
+}
+
+function tick(dt) {
+  const c = CONFIG;
+  S.t += dt;
+  S.pulse *= Math.exp(-dt * 9); S.flash *= Math.exp(-dt * 6);
+  for (const r of S.ripples) r.t += dt;
+  S.ripples = S.ripples.filter(r => r.t < 0.5);
+  for (const p of S.parts) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= Math.exp(-dt * 2.2); p.vy *= Math.exp(-dt * 2.2); }
+  S.parts = S.parts.filter(p => p.t < p.life);
+  if (S.phase === 'play') {
+    S.hist.push({ x: S.x, y: S.y, r: S.r, hue: S.hue, n: S.strings.length, count: S.count });
+    stepPhysics(dt);
+    if (c.R - S.r < c.endGap) burst();
+  } else if (S.phase === 'burst') {
+    S.phaseT += dt;
+    if (S.phaseT >= c.burstTime) { S.phase = 'rewind'; S.phaseT = 0; onRewind(); }
+  } else if (S.phase === 'rewind') {
+    S.phaseT += dt;
+    const u = Math.min(1, S.phaseT / c.rewindTime);
+    const e = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
+    const idx = Math.round((S.hist.length - 1) * (1 - e));
+    S.view = S.hist[idx];
+    if (idx === 0) { const done = newSim(); done.loopDone = true; S = done; }
+  }
+}
+
+// ------------------------------------------------------------------ drawing
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+function hsl(h, s, l, a = 1) { return `hsla(${h},${s}%,${l}%,${a})`; }
+
+function draw() {
+  const c = CONFIG;
+  const rew = S.phase === 'rewind' && S.view;
+  const v = rew ? S.view : { x: S.x, y: S.y, r: S.r, hue: S.hue, n: S.strings.length, count: S.count };
+  const showBall = S.phase === 'play' || rew;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, c.W, c.H);
+  // ambient glow tinted by current hue
+  const fill = (v.r - c.r0) / (c.R - c.endGap - c.r0);
+  const bg = ctx.createRadialGradient(c.cx, c.cy, 0, c.cx, c.cy, 1100);
+  bg.addColorStop(0, hsl(v.hue, 90, 18 + 10 * fill, 0.9)); bg.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, c.W, c.H);
+
+  const z = 1 + 0.018 * S.pulse;
+  ctx.setTransform(z, 0, 0, z, c.cx, c.cy);
+  // arena rim
+  ctx.lineWidth = 10; ctx.strokeStyle = hsl(v.hue, 100, 70, 0.35);
+  ctx.beginPath(); ctx.arc(0, 0, c.R + 6, 0, 6.283); ctx.stroke();
+  ctx.lineWidth = 4; ctx.strokeStyle = '#fff';
+  ctx.beginPath(); ctx.arc(0, 0, c.R + 3, 0, 6.283); ctx.stroke();
+
+  ctx.globalCompositeOperation = 'source-over';
+  // ball
+  if (showBall) {
+    const halo = ctx.createRadialGradient(v.x, v.y, v.r * 0.9, v.x, v.y, v.r + 40);
+    halo.addColorStop(0, hsl(v.hue, 100, 60, 0.55)); halo.addColorStop(1, hsl(v.hue, 100, 60, 0));
+    ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(v.x, v.y, v.r + 40, 0, 6.283); ctx.fill();
+    const g = ctx.createRadialGradient(v.x - v.r * 0.35, v.y - v.r * 0.35, v.r * 0.05, v.x, v.y, v.r);
+    g.addColorStop(0, hsl(v.hue, 100, 70)); g.addColorStop(0.6, hsl(v.hue, 95, 38)); g.addColorStop(1, hsl(v.hue, 90, 16));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(v.x, v.y, v.r, 0, 6.283); ctx.fill();
+    ctx.lineWidth = Math.max(3, v.r * 0.04); ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  // strings: glow pass + core pass, all twanging after each bounce
+  const tw = S.phase === 'play' ? c.twang * Math.exp(-(S.t - S.lastBounceT) * c.twangDecay) : 0;
+  const n = Math.min(v.n, S.strings.length);
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.lineWidth = pass ? 2.6 : 9;
+    for (let i = 0; i < n; i++) {
+      const st = S.strings[i];
+      const ex = Math.cos(st.a) * (c.R + 2), ey = Math.sin(st.a) * (c.R + 2);
+      const dx = v.x - ex, dy = v.y - ey, L = Math.hypot(dx, dy) || 1;
+      const w = tw * Math.sin(S.t * c.twangFreq + st.ph) * Math.min(1, L / 300);
+      const mx = (ex + v.x) / 2 - dy / L * w, my = (ey + v.y) / 2 + dx / L * w;
+      ctx.strokeStyle = hsl(st.hue, 100, 62, pass ? 0.75 : 0.10);
+      ctx.beginPath(); ctx.moveTo(ex, ey); ctx.quadraticCurveTo(mx, my, v.x, v.y); ctx.stroke();
+    }
+  }
+  // anchor dots on the rim
+  for (let i = 0; i < n; i++) {
+    const st = S.strings[i];
+    ctx.fillStyle = hsl(st.hue, 100, 70, 0.9);
+    ctx.beginPath(); ctx.arc(Math.cos(st.a) * (c.R + 3), Math.sin(st.a) * (c.R + 3), 6, 0, 6.283); ctx.fill();
+  }
+  // ripples at contact points
+  for (const r of S.ripples) {
+    const k = r.t / 0.5;
+    ctx.strokeStyle = hsl(r.hue, 100, 70, 0.9 * (1 - k)); ctx.lineWidth = 14 * (1 - k) + 2;
+    ctx.beginPath(); ctx.arc(0, 0, c.R + 4, r.a - 0.12 - 0.5 * k, r.a + 0.12 + 0.5 * k); ctx.stroke();
+    ctx.fillStyle = hsl(r.hue, 100, 80, 0.5 * (1 - k));
+    ctx.beginPath(); ctx.arc(Math.cos(r.a) * c.R, Math.sin(r.a) * c.R, 10 + 60 * k, 0, 6.283); ctx.fill();
+  }
+  // particles
+  for (const p of S.parts) {
+    const a = 1 - p.t / p.life;
+    ctx.fillStyle = hsl(p.hue, 100, 65, a);
+    ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // rewind tint + scanlines
+  if (rew) {
+    const k = Math.sin(Math.PI * Math.min(1, S.phaseT / c.rewindTime));
+    ctx.fillStyle = `rgba(255,255,255,${0.05 * k})`;
+    for (let y = (S.t * 900) % 12; y < c.H; y += 12) ctx.fillRect(0, y, c.W, 3);
+  }
+  if (S.flash > 0.01) { ctx.fillStyle = `rgba(255,255,255,${0.85 * S.flash})`; ctx.fillRect(0, 0, c.W, c.H); }
+
+  // counter (bounces) + fill progress bar
+  const cs = 1 + 0.18 * S.pulse;
+  ctx.save(); ctx.translate(c.W / 2, 250); ctx.scale(cs, cs);
+  ctx.font = c.counterFont; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 14; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(String(v.count), 0, 0);
+  ctx.fillStyle = '#fff'; ctx.fillText(String(v.count), 0, 0);
+  ctx.restore();
+  const bw = 560, bx = (c.W - bw) / 2, by = 1600, f = Math.max(0, Math.min(1, fill));
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(bx, by, bw, 14);
+  const gb = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  gb.addColorStop(0, hsl(v.hue, 100, 60)); gb.addColorStop(1, hsl((v.hue + 120) % 360, 100, 60));
+  ctx.fillStyle = gb; ctx.fillRect(bx, by, bw * f, 14);
+}
+
+// ------------------------------------------------------------- live sound
+let AC = null;
+function pluck(i, fill) {
+  if (!AC) return;
+  const SCALE = [0, 3, 5, 7, 10, 12, 15, 17];
+  const f = 220 * Math.pow(2, (SCALE[i % 8] + 12 * Math.floor(fill * 2.5)) / 12);
+  const o = AC.createOscillator(), g = AC.createGain(); o.type = 'triangle'; o.frequency.value = f;
+  g.gain.setValueAtTime(0.0001, AC.currentTime); g.gain.exponentialRampToValueAtTime(0.25, AC.currentTime + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + 0.4);
+  o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + 0.45);
+}
+let last = 0, acc = 0, live = false;
+function loop(ts) {
+  if (!last) last = ts; acc += Math.min(0.1, (ts - last) / 1000); last = ts;
+  while (acc >= 1 / 60) { tick(1 / 60); if (S.loopDone) S.loopDone = false; acc -= 1 / 60; }
+  draw(); requestAnimationFrame(loop);
+}
+document.getElementById('start').onclick = (e) => {
+  e.target.remove(); AC = new AudioContext(); onBounce = pluck; live = true; requestAnimationFrame(loop);
+};
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') S = newSim(); });
+draw();
+window.__sim = () => S; window.__tick = tick; window.__draw = draw;
+</script>
+</body>
+</html>
