@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## hero_ball_seed5.mp4 (hero_sim/renders)
+**Title (EN):** This little ball EVOLVES every 3 floors… then meets the BOSS 😤
+
+Every block it breaks makes it stronger 💪 Normal → Fire 🔥 → Electric ⚡ → Plasma 🔮 → RAINBOW 🌈
+At the bottom waits a 1,600 HP boss block… can it win? 👀
+Sound ON 🔊
+
+#shorts #satisfying #oddlysatisfying #gaming #boss #evolution
+
+**Título (ES):** Esta bolita EVOLUCIONA cada 3 pisos… y luego llega el JEFE 😤
+
+Cada bloque que rompe la hace más fuerte 💪 Normal → Fuego 🔥 → Eléctrica ⚡ → Plasma 🔮 → ARCOÍRIS 🌈
+Abajo la espera un jefe de 1.600 de vida… ¿podrá ganarle? 👀
+Sube el volumen 🔊
+
+#shorts #satisfying #oddlysatisfying #gaming #jefefinal #evolucion
+
 ## laser_race_seed14.mp4 (race_sim/renders)
 **Title (EN):** Pick a color… can it outrun the LASER? 🔴🟢🔵 Marble Race
 

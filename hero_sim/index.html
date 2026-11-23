@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hero Ball</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font: 20px system-ui, sans-serif; background: rgba(0,0,0,.55); cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="start">Click para empezar (R reinicia)</div>
+<script>
+// ---------------------------------------------------------------------------
+// Hero Ball: one ball with a face smashes down a tower of floors made of
+// blocks with HP. Every block it breaks makes it stronger; every few floors it
+// EVOLVES (normal -> fire -> electric -> plasma -> rainbow). At the bottom
+// waits a giant boss block. URL: ?seed=N&floors=18
+// ---------------------------------------------------------------------------
+const Q = new URLSearchParams(location.search);
+const CONFIG = {
+  seed: +(Q.get('seed') || 1), floors: +(Q.get('floors') || 14),
+  W: 1080, H: 1920, zoom: 1.35, VW: 800, wallL: 20, wallR: 780,
+  r: 46, gravity: 3300, bounceV: 980, sideV: 130,
+  floorGap: 480, firstFloor: 700, cols: 5,
+  evolveEvery: 3, bossHits: 6,
+  font: '"Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif',
+  tiers: [
+    { scale: 1.00, a: [235, 240, 255], b: [120, 150, 255], glow: [140, 170, 255], mult: 1 },
+    { scale: 1.12, a: [255, 230, 120], b: [255, 90, 20], glow: [255, 120, 30], mult: 2 },
+    { scale: 1.24, a: [200, 255, 255], b: [0, 170, 255], glow: [80, 220, 255], mult: 2 },
+    { scale: 1.36, a: [255, 200, 255], b: [170, 40, 255], glow: [200, 90, 255], mult: 2 },
+    { scale: 1.50, a: [255, 255, 255], b: [255, 60, 160], glow: [255, 255, 255], mult: 2 },
+  ],
+};
+
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+let onHit = () => {}, onBreak = () => {}, onEvolve = () => {}, onFloor = () => {}, onBoss = () => {}, onBossHit = () => {}, onWin = () => {};
+let S;
+
+function makeFloor(k) {
+  const c = CONFIG, y = c.firstFloor + k * c.floorGap, w = (c.wallR - c.wallL) / c.cols;
+  const boss = k === c.floors;
+  if (boss) {
+    const hp = S.power * c.tiers[Math.min(S.tier, 4)].mult * c.bossHits;
+    return { k, y, boss: true, blocks: [{ x: c.wallL, y, w: c.wallR - c.wallL, h: 220, hp, max: hp, flash: 0, alive: true }] };
+  }
+  const blocks = [];
+  for (let i = 0; i < c.cols; i++) {
+    // 1-3 hits each, sometimes a glass block (1 hit) or a tough one (4 hits)
+    const roll = S.rnd(); const hits = roll < 0.35 ? 1 : roll < 0.85 ? 2 : 3;
+    const hp = Math.max(1, Math.round(S.power * (hits - 0.5 + 0.5 * S.rnd())));
+    blocks.push({ x: c.wallL + i * w + 4, y, w: w - 8, h: 92, hp, max: hp, flash: 0, alive: true, glass: hits === 1 });
+  }
+  return { k, y, boss: false, blocks };
+}
+
+function newSim() {
+  const c = CONFIG;
+  S = { rnd: mulberry32(c.seed), t: 0, vt: 0, x: c.VW / 2, y: 200, vx: c.sideV, vy: 0, power: 1, tier: 0,
+        floors: [], cleared: 0, parts: [], pops: [], rings: [], trail: [], shake: 0, flash: 0, slow: 0,
+        squint: 0, squash: 0, evolveT: -10, camY: 0, done: false, won: -1, bossShown: false, hue: 0 };
+  for (let k = 0; k <= Math.min(2, c.floors); k++) S.floors.push(makeFloor(k));
+  S.camY = S.y - c.H / c.zoom * 0.35;
+  return S;
+}
+newSim();
+
+function burst(x, y, col, n, sp, life, size, up = 0) {
+  for (let k = 0; k < n; k++) { const a = S.rnd() * 6.283, v = sp * (0.3 + S.rnd());
+    S.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - up, t: 0, life: life * (0.5 + S.rnd()), col, s: size * (0.5 + S.rnd()), g: 1 }); }
+}
+const tierOf = () => CONFIG.tiers[S.tier];
+const radius = () => CONFIG.r * tierOf().scale;
+
+function evolve() {
+  const c = CONFIG;
+  if (S.tier >= c.tiers.length - 1) return;
+  S.tier++; S.power *= tierOf().mult; S.evolveT = S.vt; S.slow = 0.55; S.flash = 0.9; S.shake = 26;
+  burst(S.x, S.y, tierOf().glow, 120, 1300, 0.9, 9);
+  S.rings.push({ x: S.x, y: S.y, t: 0, col: tierOf().glow, R: 600 });
+  onEvolve(S.tier);
+}
+
+function hitBlock(fl, b) {
+  const c = CONFIG, dmg = Math.min(b.hp, S.power);
+  b.hp -= dmg; b.flash = 1; S.squint = 0.16; S.squash = 1; S.hue = (S.hue + 37) % 360;
+  S.pops.push({ x: S.x + (S.rnd() - 0.5) * 60, y: b.y - 30, t: 0, txt: '-' + dmg, big: fl.boss ? 1.6 : 1 });
+  burst(S.x, b.y, fl.boss ? [255, 220, 120] : [255, 255, 255], fl.boss ? 30 : 12, 500, 0.4, 5, 200);
+  S.shake = Math.max(S.shake, fl.boss ? 16 : 6);
+  if (fl.boss) onBossHit(b.hp / b.max); else onHit(S.power);
+  if (b.hp <= 0) {
+    b.alive = false; S.power += 1;
+    const col = fl.boss ? [255, 200, 80] : blockColor(fl, b);
+    burst(b.x + b.w / 2, b.y + b.h / 2, col, fl.boss ? 400 : 40, fl.boss ? 1800 : 700, fl.boss ? 1.6 : 0.7, fl.boss ? 12 : 9, 300);
+    if (fl.boss) {
+      S.won = S.vt; S.slow = 1.2; S.flash = 1; S.shake = 50;
+      S.rings.push({ x: S.x, y: b.y, t: 0, col: [255, 255, 255], R: 900 }); onWin();
+    } else onBreak(fl.k);
+  }
+}
+
+function blockColor(fl, b) {
+  const h = (fl.k * 29 + 200) % 360, l = 0.35 + 0.25 * (b.hp / b.max);
+  // hsl -> rgb
+  const a = 0.85 * Math.min(l, 1 - l), f = n => { const k = (n + h / 30) % 12; return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
+  return [f(0), f(8), f(4)];
+}
+
+function physics(dt) {
+  const c = CONFIG, r = radius();
+  S.vy += c.gravity * dt; S.x += S.vx * dt; S.y += S.vy * dt;
+  if (S.x < c.wallL + r) { S.x = c.wallL + r; S.vx = Math.abs(S.vx); }
+  if (S.x > c.wallR - r) { S.x = c.wallR - r; S.vx = -Math.abs(S.vx); }
+  for (const fl of S.floors) for (const b of fl.blocks) {
+    if (!b.alive) continue;
+    const qx = Math.max(b.x, Math.min(S.x, b.x + b.w)), qy = Math.max(b.y, Math.min(S.y, b.y + b.h));
+    let dx = S.x - qx, dy = S.y - qy; const d = Math.hypot(dx, dy);
+    if (d >= r) continue;
+    if (d === 0) { dx = 0; dy = -1; } else { dx /= d; dy /= d; }
+    S.x = qx + dx * r; S.y = qy + dy * r;
+    if (dy < -0.5 && S.vy > 0) {               // landed on top: smash + bounce up
+      S.vy = -c.bounceV * (fl.boss ? 1.08 : 1);
+      S.vx = Math.sign(S.vx || 1) * c.sideV * (0.5 + S.rnd()) * (S.rnd() < 0.2 ? -1 : 1);
+      hitBlock(fl, b);
+    } else if (Math.abs(dx) > 0.5) { S.vx = Math.sign(dx) * Math.abs(S.vx); }
+    else if (dy > 0.5 && S.vy < 0) S.vy = -S.vy * 0.3;
+  }
+  // floors passed
+  const passed = S.floors.filter(f => !f.boss && S.y - r > f.y + 92 && !f.passed);
+  for (const f of passed) {
+    f.passed = true; S.cleared++; S.lastFloorT = S.vt; onFloor(S.cleared);
+    if (S.cleared % c.evolveEvery === 0) evolve();
+    const nk = S.floors[S.floors.length - 1].k + 1;
+    if (nk <= c.floors) { S.floors.push(makeFloor(nk)); if (nk === c.floors) { S.bossShown = true; onBoss(); } }
+  }
+  S.floors = S.floors.filter(f => f.y > S.y - 2000);
+}
+
+function tick(dt) {
+  const c = CONFIG; S.vt += dt;
+  let scale = 1;
+  if (S.slow > 0) { S.slow -= dt; scale = 0.25; }
+  if (S.won >= 0 && S.vt - S.won > 3.6) S.done = true;
+  const sdt = dt * scale; S.t += sdt;
+  if (S.won < 0 || S.vt - S.won < 0.2) for (let k = 0; k < 6; k++) physics(sdt / 6);
+  else { S.vy = Math.min(S.vy + c.gravity * sdt * 0.3, 500); S.y += S.vy * sdt * 0.4; }
+  S.trail.unshift([S.x, S.y]); if (S.trail.length > 14) S.trail.pop();
+  // tier particles
+  const T = S.tier;
+  if (T === 1 && S.rnd() < 0.9) S.parts.push({ x: S.x + (S.rnd() - 0.5) * 40, y: S.y + (S.rnd() - 0.5) * 40, vx: (S.rnd() - 0.5) * 80, vy: -150 - S.rnd() * 200, t: 0, life: 0.45, col: [255, 140 + S.rnd() * 100 | 0, 30], s: 10 + S.rnd() * 10, g: -0.4 });
+  if (T >= 2 && S.rnd() < 0.5) { const a = S.rnd() * 6.283; S.parts.push({ x: S.x + Math.cos(a) * radius() * 1.3, y: S.y + Math.sin(a) * radius() * 1.3, vx: Math.cos(a) * 300, vy: Math.sin(a) * 300, t: 0, life: 0.25, col: tierOf().glow, s: 5, g: 0 }); }
+  for (const p of S.parts) { p.t += sdt; p.x += p.vx * sdt; p.y += p.vy * sdt; p.vy += 1500 * p.g * sdt; p.vx *= Math.exp(-sdt * 2); }
+  S.parts = S.parts.filter(p => p.t < p.life); if (S.parts.length > 3000) S.parts.splice(0, S.parts.length - 3000);
+  for (const r of S.rings) r.t += sdt; S.rings = S.rings.filter(r => r.t < 0.7);
+  for (const p of S.pops) p.t += dt; S.pops = S.pops.filter(p => p.t < 0.7);
+  for (const fl of S.floors) for (const b of fl.blocks) b.flash *= Math.exp(-dt * 12);
+  S.shake *= Math.exp(-dt * 9); S.flash *= Math.exp(-dt * 5); S.squint = Math.max(0, S.squint - dt); S.squash *= Math.exp(-dt * 14);
+  const target = S.y - c.H / c.zoom * 0.38;
+  S.camY += (target - S.camY) * (1 - Math.exp(-dt * 7));
+}
+
+// ------------------------------------------------------------------ drawing
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const DR = mulberry32(4242);   // drawing-only randomness (keeps the sim deterministic)
+const rgb = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+
+function drawFace(x, y, r) {
+  const c = CONFIG, boss = S.bossShown, won = S.won >= 0;
+  const blink = (S.vt % 3.1) < 0.09 && !won;
+  const lx = Math.max(-1, Math.min(1, S.vx / 600)), ly = Math.max(-1, Math.min(1, S.vy / 1200));
+  ctx.lineCap = 'round';
+  for (const s of [-1, 1]) {
+    const ex = x + s * r * 0.33, ey = y - r * 0.12, er = r * 0.25;
+    if (won || S.squint > 0) {          // ^ ^ happy / impact squint
+      ctx.strokeStyle = '#1a1030'; ctx.lineWidth = r * 0.1;
+      ctx.beginPath(); ctx.moveTo(ex - er, ey + er * 0.3); ctx.lineTo(ex, ey - er * 0.5); ctx.lineTo(ex + er, ey + er * 0.3); ctx.stroke();
+    } else if (blink) {
+      ctx.strokeStyle = '#1a1030'; ctx.lineWidth = r * 0.08; ctx.beginPath(); ctx.moveTo(ex - er, ey); ctx.lineTo(ex + er, ey); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(ex, ey, er, er * 1.15, 0, 0, 6.283); ctx.fill();
+      ctx.fillStyle = '#1a1030'; ctx.beginPath(); ctx.arc(ex + lx * er * 0.4, ey + ly * er * 0.45, er * 0.52, 0, 6.283); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex + lx * er * 0.4 - er * 0.18, ey + ly * er * 0.45 - er * 0.2, er * 0.17, 0, 6.283); ctx.fill();
+    }
+    if (boss && !won) {                 // determined brows
+      ctx.strokeStyle = '#1a1030'; ctx.lineWidth = r * 0.09;
+      ctx.beginPath(); ctx.moveTo(ex - s * er * 1.0, ey - er * 1.45); ctx.lineTo(ex + s * er * 0.9, ey - er * 1.05); ctx.stroke();
+    }
+  }
+  // mouth
+  ctx.strokeStyle = '#1a1030'; ctx.lineWidth = r * 0.08;
+  if (won) { ctx.fillStyle = '#4a1030'; ctx.beginPath(); ctx.arc(x, y + r * 0.28, r * 0.25, 0, Math.PI); ctx.fill(); }
+  else if (S.squint > 0) { ctx.beginPath(); ctx.arc(x, y + r * 0.35, r * 0.12, 0, 6.283); ctx.stroke(); }
+  else if (boss) { ctx.beginPath(); ctx.moveTo(x - r * 0.18, y + r * 0.38); ctx.lineTo(x + r * 0.18, y + r * 0.38); ctx.stroke(); }
+  else { ctx.beginPath(); ctx.arc(x, y + r * 0.22, r * 0.2, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke(); }
+  // blush
+  ctx.fillStyle = 'rgba(255,90,140,0.35)';
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.ellipse(x + s * r * 0.55, y + r * 0.22, r * 0.14, r * 0.08, 0, 0, 6.283); ctx.fill(); }
+}
+
+function drawBall() {
+  const c = CONFIG, T = tierOf(), r = radius();
+  const rainbow = S.tier === 4;
+  const glow = rainbow ? hslArr(S.vt * 240 % 360) : T.glow;
+  // trail
+  ctx.globalCompositeOperation = 'lighter';
+  S.trail.forEach(([x, y], i) => { if (!i) return; const k = 1 - i / S.trail.length;
+    ctx.fillStyle = rgb(rainbow ? hslArr((S.vt * 240 + i * 25) % 360) : glow, 0.22 * k);
+    ctx.beginPath(); ctx.arc(x, y, r * (0.5 + 0.5 * k), 0, 6.283); ctx.fill(); });
+  // aura
+  const pulse = 1 + 0.06 * Math.sin(S.vt * 10);
+  const au = ctx.createRadialGradient(S.x, S.y, r * 0.8, S.x, S.y, r * (1.9 + 0.3 * S.tier) * pulse);
+  au.addColorStop(0, rgb(glow, 0.55)); au.addColorStop(1, rgb(glow, 0));
+  ctx.fillStyle = au; ctx.beginPath(); ctx.arc(S.x, S.y, r * (1.9 + 0.3 * S.tier) * pulse, 0, 6.283); ctx.fill();
+  if (S.tier >= 3) for (let i = 0; i < 3; i++) {            // orbiting orbs
+    const a = S.vt * 5 + i * 2.094; ctx.fillStyle = rgb(glow, 0.9);
+    ctx.beginPath(); ctx.arc(S.x + Math.cos(a) * r * 1.6, S.y + Math.sin(a) * r * 1.6, r * 0.16, 0, 6.283); ctx.fill(); }
+  if (S.tier === 2 || S.tier >= 3) {                         // electric arcs
+    ctx.strokeStyle = rgb(glow, 0.8); ctx.lineWidth = 3;
+    for (let i = 0; i < 3; i++) { const a0 = DR() * 6.283; ctx.beginPath();
+      for (let k = 0; k < 5; k++) { const a = a0 + k * 0.25, rr = r * (1.05 + 0.25 * DR()); const px = S.x + Math.cos(a) * rr, py = S.y + Math.sin(a) * rr; k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+      ctx.stroke(); }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  const sq = 1 + 0.22 * S.squash;
+  ctx.save(); ctx.translate(S.x, S.y + r * 0.1 * S.squash); ctx.scale(sq, 1 / sq);
+  const g = ctx.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.1, 0, 0, r);
+  const A = rainbow ? hslArr(S.vt * 240 % 360, 0.85) : T.a, B = rainbow ? hslArr((S.vt * 240 + 120) % 360, 0.5) : T.b;
+  g.addColorStop(0, rgb(A)); g.addColorStop(1, rgb(B));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.283); ctx.fill();
+  ctx.lineWidth = r * 0.09; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.stroke();
+  drawFace(0, 0, r);
+  ctx.restore();
+}
+function hslArr(h, l = 0.6) { const s = 1, a = s * Math.min(l, 1 - l); const f = n => { const k = (n + h / 30) % 12; return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))); }; return [f(0), f(8), f(4)]; }
+
+function drawBlock(fl, b) {
+  const col = fl.boss ? [90, 20, 40] : blockColor(fl, b);
+  ctx.save();
+  if (fl.boss) { ctx.translate((DR() - 0.5) * 6 * b.flash, 0); }
+  ctx.fillStyle = rgb(col); ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 18); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.beginPath(); ctx.roundRect(b.x + 6, b.y + 6, b.w - 12, b.h * 0.3, 12); ctx.fill();
+  if (b.glass) { ctx.strokeStyle = 'rgba(200,240,255,0.9)'; ctx.lineWidth = 5; ctx.beginPath(); ctx.roundRect(b.x + 3, b.y + 3, b.w - 6, b.h - 6, 16); ctx.stroke(); }
+  // cracks as damage grows
+  const dmg = 1 - b.hp / b.max;
+  if (dmg > 0.2) { ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = fl.boss ? 6 : 3; const n = Math.ceil(dmg * (fl.boss ? 12 : 4));
+    const rr = mulberry32(fl.k * 97 + Math.round(b.x)); for (let i = 0; i < n; i++) { let x = b.x + rr() * b.w, y = b.y + rr() * b.h; ctx.beginPath(); ctx.moveTo(x, y);
+      for (let k = 0; k < 4; k++) { x += (rr() - 0.5) * (fl.boss ? 120 : 50); y += (rr() - 0.5) * (fl.boss ? 80 : 40); ctx.lineTo(x, y); } ctx.stroke(); } }
+  if (b.flash > 0.02) { ctx.fillStyle = `rgba(255,255,255,${0.8 * b.flash})`; ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 18); ctx.fill(); }
+  ctx.lineWidth = fl.boss ? 10 : 5; ctx.strokeStyle = fl.boss ? '#ffcc44' : 'rgba(255,255,255,0.85)'; ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 18); ctx.stroke();
+  const fs = fl.boss ? 130 : (String(b.hp).length > 3 ? 40 : 52);
+  ctx.font = `900 ${fs}px ${CONFIG.font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = fs * 0.16; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.strokeText(String(b.hp), b.x + b.w / 2, b.y + b.h / 2 + 3);
+  ctx.fillStyle = '#fff'; ctx.fillText(String(b.hp), b.x + b.w / 2, b.y + b.h / 2 + 3);
+  if (fl.boss) {   // boss face: angry eyes on the block
+    for (const s of [-1, 1]) { const ex = b.x + b.w / 2 + s * 250, ey = b.y + 80;
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex, ey, 34, 0, 6.283); ctx.fill();
+      ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(ex + (S.x - ex) * 0.04, ey + 6, 16, 0, 6.283); ctx.fill();
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 12; ctx.beginPath(); ctx.moveTo(ex - s * 45, ey - 52); ctx.lineTo(ex + s * 30, ey - 30); ctx.stroke(); }
+  }
+  ctx.restore();
+}
+
+function draw() {
+  const c = CONFIG, Z = c.zoom;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const T = tierOf();
+  const bg = ctx.createLinearGradient(0, 0, 0, c.H);
+  bg.addColorStop(0, rgb(T.glow.map(v => v * 0.12))); bg.addColorStop(1, '#05040a');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, c.W, c.H);
+  const sx = (Math.sin(S.vt * 83) + Math.sin(S.vt * 47)) * S.shake * 0.5, sy = Math.cos(S.vt * 71) * S.shake * 0.5;
+  const ez = Math.max(0, 1 - (S.vt - S.evolveT) / 0.6) * 0.12;   // punch-in on evolve
+  const z = Z * (1 + ez);
+  const cx = c.VW / 2, cy = S.camY + c.H / Z / 2;
+  ctx.setTransform(z, 0, 0, z, c.W / 2 - cx * z + sx, c.H / 2 - cy * z + sy);
+  const top = S.camY - 300, bot = S.camY + c.H / Z + 300;
+  // shaft + depth grid
+  ctx.fillStyle = 'rgba(255,255,255,0.03)'; ctx.fillRect(c.wallL, top, c.wallR - c.wallL, bot - top);
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 2;
+  for (let y = Math.floor(top / 100) * 100; y < bot; y += 100) { ctx.beginPath(); ctx.moveTo(c.wallL, y); ctx.lineTo(c.wallR, y); ctx.stroke(); }
+  ctx.fillStyle = '#16131f'; ctx.fillRect(-400, top, 400 + c.wallL, bot - top); ctx.fillRect(c.wallR, top, 400, bot - top);
+  ctx.strokeStyle = rgb(T.glow, 0.8); ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(c.wallL, top); ctx.lineTo(c.wallL, bot); ctx.moveTo(c.wallR, top); ctx.lineTo(c.wallR, bot); ctx.stroke();
+  for (const fl of S.floors) for (const b of fl.blocks) if (b.alive && b.y < bot && b.y + b.h > top) drawBlock(fl, b);
+  drawBall();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of S.parts) { const a = 1 - p.t / p.life; ctx.fillStyle = rgb(p.col, a); ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); }
+  for (const r of S.rings) { const k = r.t / 0.7; ctx.strokeStyle = rgb(r.col, 1 - k); ctx.lineWidth = 24 * (1 - k) + 2;
+    ctx.beginPath(); ctx.arc(r.x, r.y, 40 + r.R * Math.sqrt(k), 0, 6.283); ctx.stroke(); }
+  ctx.globalCompositeOperation = 'source-over';
+  for (const p of S.pops) { const k = p.t / 0.7, s = p.big * (k < 0.1 ? 0.6 + 4 * k : 1);
+    ctx.save(); ctx.translate(p.x, p.y - 80 * k); ctx.scale(s, s); ctx.globalAlpha = Math.min(1, (1 - k) * 2.5);
+    ctx.font = `900 54px ${c.font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 9; ctx.strokeStyle = '#000'; ctx.strokeText(p.txt, 0, 0); ctx.fillStyle = '#ffe066'; ctx.fillText(p.txt, 0, 0); ctx.restore(); }
+  if (S.won >= 0) {   // victory rays + confetti rain
+    const k = Math.min(1, (S.vt - S.won) / 0.8);
+    ctx.save(); ctx.translate(S.x, S.y); ctx.rotate(S.vt * 0.7);
+    for (let i = 0; i < 16; i++) { ctx.rotate(6.283 / 16); ctx.fillStyle = rgb(hslArr(i * 22.5), 0.16 * k); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(1400, -110); ctx.lineTo(1400, 110); ctx.fill(); }
+    ctx.restore(); drawBall();
+  }
+  // HUD: floors counter + progress to the boss
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const hg = ctx.createLinearGradient(0, 0, 0, 520); hg.addColorStop(0, 'rgba(0,0,0,0.85)'); hg.addColorStop(0.7, 'rgba(0,0,0,0.55)'); hg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = hg; ctx.fillRect(0, 0, c.W, 520);
+  const n = S.won >= 0 ? c.floors + 1 : S.cleared;
+  const pop = Math.max(0, 1 - (S.vt - (S.lastFloorT || -9)) / 0.25);
+  ctx.save(); ctx.translate(c.W / 2, 230); ctx.scale(1 + 0.2 * pop, 1 + 0.2 * pop);
+  ctx.font = `900 130px ${c.font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 18; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(String(n), 0, 0);
+  ctx.fillStyle = '#fff'; ctx.fillText(String(n), 0, 0); ctx.restore();
+  const bx = 160, bw = c.W - 320, by = 340, f = Math.min(1, n / (c.floors + 1));
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.roundRect(bx, by, bw, 18, 9); ctx.fill();
+  ctx.fillStyle = rgb(S.tier === 4 ? hslArr(S.vt * 240 % 360) : T.glow); ctx.beginPath(); ctx.roundRect(bx, by, Math.max(18, bw * f), 18, 9); ctx.fill();
+  // boss marker (skull-ish) at the end of the bar
+  ctx.fillStyle = '#ff3355'; ctx.beginPath(); ctx.arc(bx + bw + 30, by + 9, 24, 0, 6.283); ctx.fill();
+  ctx.fillStyle = '#fff'; for (const s of [-1, 1]) { ctx.beginPath(); ctx.arc(bx + bw + 30 + s * 9, by + 5, 6, 0, 6.283); ctx.fill(); }
+  // evolution stages under the bar
+  for (let i = 0; i < c.tiers.length; i++) { const x = c.W / 2 + (i - 2) * 80, y = 410;
+    ctx.globalAlpha = i <= S.tier ? 1 : 0.25; ctx.fillStyle = rgb(i === 4 ? hslArr(S.vt * 240 % 360) : c.tiers[i].glow);
+    ctx.beginPath(); ctx.arc(x, y, i === S.tier ? 22 : 15, 0, 6.283); ctx.fill(); ctx.globalAlpha = 1; }
+  if (S.flash > 0.01) { ctx.fillStyle = `rgba(255,255,255,${S.flash * 0.7})`; ctx.fillRect(0, 0, c.W, c.H); }
+}
+
+// ------------------------------------------------------------- live sound
+let AC = null;
+function tone(f, d, type = 'square', v = 0.1) { if (!AC) return; const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, AC.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + d);
+  o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + d); }
+let last = 0, acc = 0;
+function loop(ts) { if (!last) last = ts; acc += Math.min(0.1, (ts - last) / 1000); last = ts;
+  while (acc >= 1 / 60) { tick(1 / 60); acc -= 1 / 60; } draw(); requestAnimationFrame(loop); }
+document.getElementById('start').onclick = (e) => { e.target.remove(); AC = new AudioContext();
+  onHit = () => tone(220, 0.1, 'square', 0.12); onBreak = () => tone(660, 0.15, 'triangle', 0.15); onEvolve = () => tone(110, 0.8, 'sawtooth', 0.3);
+  onBossHit = () => tone(80, 0.2, 'sawtooth', 0.25); onWin = () => tone(880, 1.2, 'triangle', 0.25); requestAnimationFrame(loop); };
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') newSim(); });
+draw();
+window.__sim = () => S; window.__tick = tick; window.__draw = draw;
+</script>
+</body>
+</html>
