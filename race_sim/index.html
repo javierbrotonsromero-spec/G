@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laser Marble Race</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font: 20px system-ui, sans-serif; background: rgba(0,0,0,.55); cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="start">Click para empezar (R reinicia)</div>
+<script>
+// ---------------------------------------------------------------------------
+// Laser Marble Race: 12 marbles race down an endless procedural course
+// (zigzag ramps, peg fields, spinners, funnels, bumpers) while a laser sweeps
+// down behind them. Any marble the laser touches is vaporised. Last one wins.
+// URL: ?seed=N&balls=12
+// ---------------------------------------------------------------------------
+const Q = new URLSearchParams(location.search);
+const CONFIG = {
+  seed: +(Q.get('seed') || 1), n: +(Q.get('balls') || 12),
+  W: 1080, H: 1920, zoom: 1.35, VW: 800, wallL: 22, wallR: 778,
+  r: 28, gravity: 1500, rest: 0.45, bumperRest: 1.35, maxSpeed: 1900, substeps: 8,
+  gateOpen: 0.35,
+  laser: { start: -260, base: 130, lin: 90, quad: 70, pause: 0.55, catchUp: 900 },
+  camOffset: 300,
+  winSlow: 0.25, winSlowTime: 1.0, endHold: 3.2,
+  colors: ['#ff3b5c', '#ff8a1f', '#ffd60a', '#7ed321', '#00d084', '#00c2ff', '#2f6bff', '#8b5cf6',
+           '#ff4fd8', '#ffffff', '#a0522d', '#14b8a6', '#f43f5e', '#84cc16', '#0ea5e9', '#eab308'],
+  font: '"Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif',
+};
+
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+let onHit = () => {}, onBumper = () => {}, onKill = () => {}, onGate = () => {}, onWin = () => {};
+let S;
+
+// ------------------------------------------------------------ course builder
+function buildCourse(rnd) {
+  const c = CONFIG, L = c.wallL, R = c.wallR, W = R - L;
+  const segs = [], pegs = [], spinners = [], decor = [];
+  let y = 300;
+  // starting gate (removed at gateOpen)
+  segs.push({ x1: L, y1: 230, x2: R, y2: 230, gate: true });
+  const kinds = ['zigzag', 'pegs', 'spinners', 'funnel', 'bumpers'];
+  let prev = '';
+  for (let s = 0; s < 40; s++) {
+    let k; do { k = kinds[Math.floor(rnd() * kinds.length)]; } while (k === prev); prev = k;
+    const y0 = y;
+    if (k === 'zigzag') {
+      const n = 3; let left = rnd() < 0.5;
+      for (let i = 0; i < n; i++) {
+        const gap = 125;
+        if (left) segs.push({ x1: L, y1: y, x2: R - gap, y2: y + 170 });
+        else segs.push({ x1: R, y1: y, x2: L + gap, y2: y + 170 });
+        left = !left; y += 300;
+      }
+      y += 80;
+    } else if (k === 'pegs') {
+      const rows = 7, dx = 112;
+      for (let i = 0; i < rows; i++) {
+        const off = (i % 2) * dx / 2 + 60;
+        for (let x = L + off - 30; x < R - 20; x += dx) if (x > L + 20) pegs.push({ x, y: y + i * 115, r: 13, bounce: false });
+      }
+      y += rows * 115 + 80;
+    } else if (k === 'spinners') {
+      for (let i = 0; i < 2; i++) {
+        const dir = rnd() < 0.5 ? 1 : -1;
+        spinners.push({ cx: L + W * 0.28, cy: y + 140, len: W * 0.2, ang: rnd() * 6.28, w: 2.4 * dir });
+        spinners.push({ cx: L + W * 0.72, cy: y + 140, len: W * 0.2, ang: rnd() * 6.28, w: -2.4 * dir });
+        y += 360;
+      }
+      y += 40;
+    } else if (k === 'funnel') {
+      const gap = 2 * c.r * 2.3, cx = L + W * (0.3 + 0.4 * rnd());
+      segs.push({ x1: L, y1: y, x2: cx - gap / 2, y2: y + 330 });
+      segs.push({ x1: R, y1: y, x2: cx + gap / 2, y2: y + 330 });
+      y += 330 + 160;
+    } else if (k === 'bumpers') {
+      const pts = [[0.25, 0], [0.75, 0], [0.5, 1], [0.15, 2], [0.85, 2], [0.5, 3]];
+      for (const [fx, fy] of pts) pegs.push({ x: L + W * (fx + (rnd() - 0.5) * 0.08), y: y + 60 + fy * 200, r: 52, bounce: true, flash: 0 });
+      y += 4 * 200 + 80;
+    }
+    decor.push({ y0, y1: y, k });
+  }
+  return { segs, pegs, spinners, decor, end: y };
+}
+
+function newSim() {
+  const c = CONFIG, rnd = mulberry32(c.seed);
+  const course = buildCourse(rnd);
+  const order = [...Array(c.n).keys()]; for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  const balls = order.map((ci, k) => ({
+    id: ci, col: c.colors[ci], x: c.wallL + 60 + k * ((c.wallR - c.wallL - 120) / (c.n - 1)), y: 190,
+    vx: (rnd() - 0.5) * 60, vy: 0, alive: true, deadT: 0, place: 0, squash: 0, lastHit: -1,
+  }));
+  return { rnd, t: 0, vt: 0, course, balls, laserY: c.laser.start, laserV: 0, lastKill: 0, pause: 0,
+           camY: c.laser.start - c.camOffset + 200, parts: [], kills: [], winner: -1, winT: 0, done: false,
+           gate: true, shake: 0, flash: 0, ring: [] };
+}
+S = newSim();
+
+// ------------------------------------------------------------------ physics
+function collideSeg(b, x1, y1, x2, y2, vx0 = 0, vy0 = 0, rest = CONFIG.rest) {
+  const dx = x2 - x1, dy = y2 - y1, l2 = dx * dx + dy * dy;
+  const u = Math.max(0, Math.min(1, ((b.x - x1) * dx + (b.y - y1) * dy) / l2));
+  const qx = x1 + dx * u, qy = y1 + dy * u;
+  let nx = b.x - qx, ny = b.y - qy; const d = Math.hypot(nx, ny), r = CONFIG.r;
+  if (d >= r || d === 0) return 0;
+  nx /= d; ny /= d; b.x = qx + nx * r; b.y = qy + ny * r;
+  const rvx = b.vx - vx0, rvy = b.vy - vy0, vn = rvx * nx + rvy * ny;
+  if (vn < 0) { b.vx -= (1 + rest) * vn * nx; b.vy -= (1 + rest) * vn * ny; b.vx *= 0.998; return -vn; }
+  return 0;
+}
+function step(dt) {
+  const c = CONFIG, C = S.course;
+  if (S.gate && S.t >= c.gateOpen) { S.gate = false; onGate(); }
+  for (const sp of C.spinners) sp.ang += sp.w * dt;
+  for (const b of S.balls) {
+    if (!b.alive) continue;
+    b.vy += c.gravity * dt; b.x += b.vx * dt; b.y += b.vy * dt;
+    let imp = 0;
+    if (b.x < c.wallL + c.r) { b.x = c.wallL + c.r; if (b.vx < 0) { imp = Math.max(imp, -b.vx); b.vx = -b.vx * c.rest; } }
+    if (b.x > c.wallR - c.r) { b.x = c.wallR - c.r; if (b.vx > 0) { imp = Math.max(imp, b.vx); b.vx = -b.vx * c.rest; } }
+    for (const s of C.segs) {
+      if (s.gate && !S.gate) continue;
+      if (b.y < Math.min(s.y1, s.y2) - 60 || b.y > Math.max(s.y1, s.y2) + 60) continue;
+      imp = Math.max(imp, collideSeg(b, s.x1, s.y1, s.x2, s.y2));
+    }
+    for (const p of C.pegs) {
+      const dx = b.x - p.x, dy = b.y - p.y, d = Math.hypot(dx, dy), m = c.r + p.r;
+      if (d < m && d > 0) {
+        const nx = dx / d, ny = dy / d; b.x = p.x + nx * m; b.y = p.y + ny * m;
+        const vn = b.vx * nx + b.vy * ny;
+        if (vn < 0) {
+          if (p.bounce) { b.vx -= (1 + c.bumperRest) * vn * nx; b.vy -= (1 + c.bumperRest) * vn * ny;
+            const kick = 650; b.vx += nx * kick * 0.4; b.vy += ny * kick * 0.4;
+            if (p.flash < 0.5) onBumper(b.id); p.flash = 1; }
+          else { b.vx -= (1 + c.rest) * vn * nx; b.vy -= (1 + c.rest) * vn * ny; imp = Math.max(imp, -vn);
+            // tiny deterministic nudge so marbles never balance on a peg
+            b.vx += (S.rnd() - 0.5) * 30; }
+        }
+      }
+    }
+    for (const sp of C.spinners) {
+      if (Math.abs(b.y - sp.cy) > sp.len + 40) continue;
+      const ca = Math.cos(sp.ang) * sp.len, sa = Math.sin(sp.ang) * sp.len;
+      // contact point velocity = w x (p - c), approximate at ball projection
+      const px = b.x - sp.cx, py = b.y - sp.cy;
+      imp = Math.max(imp, collideSeg(b, sp.cx - ca, sp.cy - sa, sp.cx + ca, sp.cy + sa, -sp.w * py, sp.w * px, 0.6));
+    }
+    const sp = Math.hypot(b.vx, b.vy); if (sp > c.maxSpeed) { b.vx *= c.maxSpeed / sp; b.vy *= c.maxSpeed / sp; }
+    if (imp > 260 && S.t - b.lastHit > 0.06) { b.lastHit = S.t; b.squash = Math.min(1, imp / 900); onHit(b.id, imp); }
+  }
+  // marble vs marble
+  const A = S.balls;
+  for (let i = 0; i < A.length; i++) for (let j = i + 1; j < A.length; j++) {
+    const a = A[i], b = A[j]; if (!a.alive || !b.alive) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy), m = 2 * c.r;
+    if (d < m && d > 0) {
+      const nx = dx / d, ny = dy / d, ov = (m - d) / 2;
+      a.x -= nx * ov; a.y -= ny * ov; b.x += nx * ov; b.y += ny * ov;
+      const rel = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+      if (rel < 0) { const j2 = -(1 + 0.8) * rel / 2; a.vx -= j2 * nx; a.vy -= j2 * ny; b.vx += j2 * nx; b.vy += j2 * ny;
+        if (-rel > 300 && S.t - a.lastHit > 0.06) { a.lastHit = S.t; onHit(a.id, -rel); } }
+    }
+  }
+}
+
+function aliveBalls() { return S.balls.filter(b => b.alive); }
+function laserStep(dt) {
+  const L = CONFIG.laser, alive = aliveBalls();
+  if (S.winner >= 0 || S.t < CONFIG.gateOpen) return;
+  if (S.pause > 0) { S.pause -= dt; S.laserV = L.base * 0.3; S.laserY += S.laserV * dt; return; }
+  const s = S.t - S.lastKill;
+  const last = Math.min(...alive.map(b => b.y));
+  const gapBoost = Math.max(0, last - S.laserY - L.catchUp) * 1.4;
+  S.laserV = L.base + L.lin * s + L.quad * s * s + gapBoost;
+  S.laserY += S.laserV * dt;
+  for (const b of alive) {
+    if (b.y - CONFIG.r * 0.4 < S.laserY) {
+      b.alive = false; b.deadT = S.vt; b.place = alive.length;
+      S.kills.push({ id: b.id, t: S.vt });
+      for (let k = 0; k < 70; k++) { const a = S.rnd() * 6.283, v = 200 + S.rnd() * 1100;
+        S.parts.push({ x: b.x, y: b.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 300, t: 0, life: 0.5 + S.rnd() * 0.7, col: b.col, s: 4 + S.rnd() * 7 }); }
+      S.ring.push({ x: b.x, y: b.y, t: 0, col: b.col });
+      S.shake = 22; S.flash = 0.45; S.lastKill = S.t; S.pause = L.pause;
+      onKill(b.id, alive.length - 1);
+      const left = aliveBalls();
+      if (left.length === 1) { S.winner = left[0].id; S.winT = 0; onWin(left[0].id); }
+      break;   // one marble per sweep: never two at once
+    }
+  }
+}
+
+function tick(dt) {
+  const c = CONFIG; S.vt += dt;
+  let scale = 1;
+  if (S.winner >= 0) { S.winT += dt; scale = S.winT < c.winSlowTime ? c.winSlow : 1; if (S.winT > c.winSlowTime + c.endHold) S.done = true; }
+  const sdt = dt * scale; S.t += sdt;
+  const n = c.substeps; for (let k = 0; k < n; k++) step(sdt / n);
+  laserStep(sdt);
+  for (const p of S.course.pegs) if (p.bounce) p.flash *= Math.exp(-dt * 8);
+  for (const b of S.balls) b.squash *= Math.exp(-dt * 10);
+  for (const p of S.parts) { p.t += sdt; p.x += p.vx * sdt; p.y += p.vy * sdt; p.vy += 1400 * sdt; p.vx *= Math.exp(-sdt * 1.5); }
+  S.parts = S.parts.filter(p => p.t < p.life);
+  for (const r of S.ring) r.t += sdt; S.ring = S.ring.filter(r => r.t < 0.6);
+  S.shake *= Math.exp(-dt * 8); S.flash *= Math.exp(-dt * 7);
+  // camera: follow the laser (where the drama is); at the end, the winner
+  let target = S.laserY - c.camOffset;
+  if (S.winner >= 0) { const w = S.balls.find(b => b.id === S.winner); target = w.y - c.H / c.zoom * 0.5; }
+  const k = 1 - Math.exp(-dt * (S.winner >= 0 ? 3 : 6)); S.camY += (target - S.camY) * k;
+}
+
+// ------------------------------------------------------------------ drawing
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+function hexA(h, a) { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; }
+function lighten(h, k) { const n = parseInt(h.slice(1), 16); const f = v => Math.round(v + (255 - v) * k); return `rgb(${f(n >> 16)},${f(n >> 8 & 255)},${f(n & 255)})`; }
+function darken(h, k) { const n = parseInt(h.slice(1), 16); const f = v => Math.round(v * k); return `rgb(${f(n >> 16)},${f(n >> 8 & 255)},${f(n & 255)})`; }
+
+function drawMarble(b, x, y, r, crown) {
+  const g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+  g.addColorStop(0, lighten(b.col, 0.7)); g.addColorStop(0.55, b.col); g.addColorStop(1, darken(b.col, 0.45));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
+  ctx.lineWidth = Math.max(2, r * 0.1); ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.beginPath(); ctx.ellipse(x - r * 0.35, y - r * 0.42, r * 0.28, r * 0.17, -0.6, 0, 6.283); ctx.fill();
+}
+
+function draw() {
+  const c = CONFIG, C = S.course;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const bg = ctx.createLinearGradient(0, 0, 0, c.H);
+  bg.addColorStop(0, '#0d0b1a'); bg.addColorStop(1, '#05040b'); ctx.fillStyle = bg; ctx.fillRect(0, 0, c.W, c.H);
+  const sx = (Math.sin(S.vt * 83) + Math.sin(S.vt * 47)) * S.shake * 0.5, sy = (Math.cos(S.vt * 71)) * S.shake * 0.5;
+  const cam = S.camY, Z = c.zoom;
+  ctx.setTransform(Z, 0, 0, Z, sx, sy - cam * Z);
+  const top = cam - 40, bot = cam + c.H / Z + 40;
+  // parallax grid
+  ctx.strokeStyle = 'rgba(140,120,255,0.07)'; ctx.lineWidth = 2;
+  const gy0 = Math.floor(top / 120) * 120; for (let y = gy0; y < bot; y += 120) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(c.VW, y); ctx.stroke(); }
+  for (let x = 40; x < c.VW; x += 120) { ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bot); ctx.stroke(); }
+  // section tint bands
+  for (const d of C.decor) if (d.y1 > top && d.y0 < bot) {
+    const hue = { zigzag: 200, pegs: 280, spinners: 30, funnel: 150, bumpers: 330 }[d.k];
+    ctx.fillStyle = `hsla(${hue},80%,50%,0.05)`; ctx.fillRect(c.wallL, d.y0 - 40, c.wallR - c.wallL, d.y1 - d.y0);
+  }
+  // walls
+  ctx.fillStyle = '#1b1830'; ctx.fillRect(0, top, c.wallL, bot - top); ctx.fillRect(c.wallR, top, c.VW - c.wallR, bot - top);
+  ctx.strokeStyle = '#8f7dff'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(c.wallL, top); ctx.lineTo(c.wallL, bot); ctx.moveTo(c.wallR, top); ctx.lineTo(c.wallR, bot); ctx.stroke();
+  // segments
+  ctx.lineCap = 'round';
+  for (const s of C.segs) {
+    if (Math.max(s.y1, s.y2) < top || Math.min(s.y1, s.y2) > bot) continue;
+    if (s.gate && !S.gate) continue;
+    ctx.strokeStyle = s.gate ? '#ffd60a' : 'rgba(170,150,255,0.35)'; ctx.lineWidth = 26;
+    ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    ctx.strokeStyle = s.gate ? '#fff3a0' : '#cfc4ff'; ctx.lineWidth = 10;
+    ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+  }
+  for (const p of C.pegs) {
+    if (p.y < top || p.y > bot) continue;
+    if (p.bounce) {
+      const f = p.flash;
+      ctx.fillStyle = `rgba(255,79,216,${0.25 + 0.5 * f})`; ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 14 + 16 * f, 0, 6.283); ctx.fill();
+      // hollow neon ring so it never looks like a marble
+      const rr = p.r * (1 + 0.15 * f);
+      ctx.fillStyle = '#120a1c'; ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, 6.283); ctx.fill();
+      ctx.lineWidth = 12; ctx.strokeStyle = f > 0.2 ? '#ffffff' : '#ff4fd8'; ctx.stroke();
+      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.beginPath(); ctx.arc(p.x, p.y, rr * 0.55, 0, 6.283); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#e8e2ff'; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.283); ctx.fill();
+      ctx.fillStyle = 'rgba(143,125,255,0.35)'; ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 8, 0, 6.283); ctx.fill();
+    }
+  }
+  for (const sp of C.spinners) {
+    if (sp.cy < top - 200 || sp.cy > bot + 200) continue;
+    const ca = Math.cos(sp.ang) * sp.len, sa = Math.sin(sp.ang) * sp.len;
+    ctx.strokeStyle = 'rgba(255,138,31,0.4)'; ctx.lineWidth = 30;
+    ctx.beginPath(); ctx.moveTo(sp.cx - ca, sp.cy - sa); ctx.lineTo(sp.cx + ca, sp.cy + sa); ctx.stroke();
+    ctx.strokeStyle = '#ffb066'; ctx.lineWidth = 12; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(sp.cx, sp.cy, 14, 0, 6.283); ctx.fill();
+  }
+  // marbles
+  for (const b of S.balls) {
+    if (!b.alive) continue;
+    const r = c.r * (1 + 0.1 * b.squash);
+    ctx.fillStyle = hexA(b.col, 0.25); ctx.beginPath(); ctx.arc(b.x, b.y, r + 12, 0, 6.283); ctx.fill();
+    drawMarble(b, b.x, b.y, r);
+  }
+  // particles & rings
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of S.parts) { const a = 1 - p.t / p.life; ctx.fillStyle = hexA(p.col, a); ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); }
+  for (const r of S.ring) { const k = r.t / 0.6; ctx.strokeStyle = hexA(r.col, 1 - k); ctx.lineWidth = 18 * (1 - k) + 2;
+    ctx.beginPath(); ctx.arc(r.x, r.y, 30 + 260 * Math.sqrt(k), 0, 6.283); ctx.stroke(); }
+  ctx.globalCompositeOperation = 'source-over';
+  // laser + danger zone above it
+  if (S.winner < 0 || S.winT < 0.6) {
+    const ly = S.laserY, fade = S.winner >= 0 ? 1 - S.winT / 0.6 : 1;
+    const dz = ctx.createLinearGradient(0, ly - 420, 0, ly);
+    dz.addColorStop(0, 'rgba(255,0,40,0)'); dz.addColorStop(1, `rgba(255,0,40,${0.38 * fade})`);
+    ctx.fillStyle = dz; ctx.fillRect(0, ly - 420, c.VW, 420);
+    const wob = 1 + 0.25 * Math.sin(S.vt * 40);
+    ctx.fillStyle = `rgba(255,30,60,${0.35 * fade})`; ctx.fillRect(0, ly - 22 * wob, c.VW, 44 * wob);
+    ctx.fillStyle = `rgba(255,120,140,${0.8 * fade})`; ctx.fillRect(0, ly - 8, c.VW, 16);
+    ctx.fillStyle = `rgba(255,255,255,${fade})`; ctx.fillRect(0, ly - 3, c.VW, 6);
+    // emitters on the walls
+    for (const x of [c.wallL / 2, c.VW - c.wallL / 2]) { ctx.fillStyle = `rgba(255,255,255,${fade})`; ctx.beginPath(); ctx.arc(x, ly, 18, 0, 6.283); ctx.fill(); }
+  }
+  // winner crown + confetti burst
+  if (S.winner >= 0) {
+    const w = S.balls.find(b => b.id === S.winner), k = Math.min(1, S.winT / 0.5);
+    const rays = 14; ctx.save(); ctx.translate(w.x, w.y); ctx.rotate(S.vt * 0.8);
+    for (let i = 0; i < rays; i++) { ctx.rotate(6.283 / rays); ctx.fillStyle = hexA(w.col, 0.18 * k);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(700, -60); ctx.lineTo(700, 60); ctx.fill(); }
+    ctx.restore();
+    const R = c.r * (1 + 1.2 * (1 - Math.pow(1 - k, 3)) + 0.08 * Math.sin(S.vt * 8));
+    drawMarble(w, w.x, w.y, R);
+    ctx.save(); ctx.translate(w.x, w.y - R - 40 + Math.sin(S.vt * 6) * 6); ctx.scale(k, k);
+    ctx.fillStyle = '#ffd34d'; ctx.strokeStyle = '#a8740a'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-50, 20); ctx.lineTo(-56, -30); ctx.lineTo(-25, -5); ctx.lineTo(0, -42); ctx.lineTo(25, -5); ctx.lineTo(56, -30); ctx.lineTo(50, 20); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---------------- HUD (screen space)
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // off-screen leaders: arrows at the bottom edge
+  const ahead = S.balls.filter(b => b.alive && b.y > cam + c.H / Z - 30).sort((a, b) => a.x - b.x);
+  for (const b of ahead) {
+    const x = Math.max(70, Math.min(c.W - 70, b.x * Z)), y = c.H - 150;
+    drawMarble(b, x, y, 22);
+    ctx.fillStyle = b.col; ctx.beginPath(); ctx.moveTo(x - 14, y + 30); ctx.lineTo(x + 14, y + 30); ctx.lineTo(x, y + 50); ctx.fill();
+  }
+  // roster of all marbles (dead ones crossed out)
+  const n = S.balls.length, rowW = Math.min(980, n * 80), x0 = (c.W - rowW) / 2 + rowW / n / 2, ry = 150;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.beginPath(); ctx.roundRect((c.W - rowW) / 2 - 20, ry - 52, rowW + 40, 104, 30); ctx.fill();
+  const ids = S.balls.map(b => b).sort((a, b) => a.id - b.id);
+  ids.forEach((b, i) => {
+    const x = x0 + i * rowW / n;
+    ctx.globalAlpha = b.alive ? 1 : 0.28;
+    drawMarble(b, x, ry, 28);
+    ctx.globalAlpha = 1;
+    if (!b.alive) { const k = Math.min(1, (S.vt - b.deadT) / 0.2); ctx.strokeStyle = '#ff2040'; ctx.lineWidth = 8;
+      ctx.beginPath(); ctx.moveTo(x - 22 * k, ry - 22 * k); ctx.lineTo(x + 22 * k, ry + 22 * k); ctx.moveTo(x + 22 * k, ry - 22 * k); ctx.lineTo(x - 22 * k, ry + 22 * k); ctx.stroke(); }
+    if (b.id === S.winner) { ctx.lineWidth = 6; ctx.strokeStyle = '#ffd34d'; ctx.beginPath(); ctx.arc(x, ry, 36, 0, 6.283); ctx.stroke(); }
+  });
+  // alive counter
+  const alive = aliveBalls().length;
+  ctx.font = `900 120px ${c.font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 16; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(String(alive), c.W / 2, 300);
+  ctx.fillStyle = '#fff'; ctx.fillText(String(alive), c.W / 2, 300);
+  if (S.flash > 0.01) { ctx.fillStyle = `rgba(255,40,70,${S.flash * 0.5})`; ctx.fillRect(0, 0, c.W, c.H); }
+}
+
+// ------------------------------------------------------------- live sound
+let AC = null;
+function tone(f, d, type = 'square', v = 0.1) { if (!AC) return; const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, AC.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + d);
+  o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + d); }
+let last = 0, acc = 0;
+function loop(ts) { if (!last) last = ts; acc += Math.min(0.1, (ts - last) / 1000); last = ts;
+  while (acc >= 1 / 60) { tick(1 / 60); acc -= 1 / 60; } draw(); requestAnimationFrame(loop); }
+document.getElementById('start').onclick = (e) => { e.target.remove(); AC = new AudioContext();
+  onHit = (id, v) => tone(900 + id * 60, 0.05, 'triangle', Math.min(0.12, v / 8000)); onBumper = () => tone(520, 0.15, 'sine', 0.2);
+  onKill = () => tone(90, 0.5, 'sawtooth', 0.3); onWin = () => tone(880, 1, 'triangle', 0.2); requestAnimationFrame(loop); };
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') S = newSim(); });
+draw();
+window.__sim = () => S; window.__tick = tick; window.__draw = draw;
+</script>
+</body>
+</html>

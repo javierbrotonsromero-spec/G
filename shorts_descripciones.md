@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## laser_race_seed14.mp4 (race_sim/renders)
+**Title (EN):** Pick a color… can it outrun the LASER? 🔴🟢🔵 Marble Race
+
+12 marbles. 1 laser. Only ONE survives 😱
+Pick your color NOW and comment if it made it 👇
+The ending is so close 🤯
+
+#shorts #marblerace #satisfying #pickacolor #oddlysatisfying #asmr
+
+**Título (ES):** Elige un color… ¿escapará del LÁSER? 🔴🟢🔵 Carrera de canicas
+
+12 canicas. 1 láser. Solo UNA sobrevive 😱
+Elige tu color YA y comenta si ha llegado 👇
+El final está ajustadísimo 🤯
+
+#shorts #carreradecanicas #satisfying #eligeuncolor #oddlysatisfying #asmr
+
 ## duel_sword_vs_dagger_seed29.mp4 (duel_sim/renders)
 **Title (EN):** SWORD vs DAGGER ⚔️ Who wins? (every hit makes them stronger)
 
