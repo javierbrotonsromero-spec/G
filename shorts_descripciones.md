@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## melody_bounce_mountain_king.mp4 (melody_sim/renders)
+**Title (EN):** Every bounce is a note 🎹 (wait for the drawing at the end)
+
+This ball bounces EXACTLY on every note of "In the Hall of the Mountain King"… and it keeps getting faster 😳
+Every bounce changes its color 🌈 and leaves a light behind… watch what it draws at the end 🤯
+Sound ON 🔊
+
+#shorts #satisfying #oddlysatisfying #music #asmr #piano
+
+**Título (ES):** Cada rebote es una nota 🎹 (espera al dibujo final)
+
+Esta bola rebota EXACTAMENTE en cada nota de "En la gruta del rey de la montaña"… y cada vez va más rápido 😳
+Cada rebote cambia su color 🌈 y deja una luz… mira lo que dibuja al final 🤯
+Sube el volumen 🔊
+
+#shorts #satisfying #oddlysatisfying #musica #asmr #piano
+
 ## hero_ball_seed5.mp4 (hero_sim/renders)
 **Title (EN):** This little ball EVOLVES every 3 floors… then meets the BOSS 😤
 

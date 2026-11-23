@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Melody Bounce</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font: 20px system-ui, sans-serif; background: rgba(0,0,0,.55); cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="start">Click para empezar (R reinicia)</div>
+<script>
+// ---------------------------------------------------------------------------
+// Melody Bounce: a plain coloured ball bounces EXACTLY on every note of a
+// public-domain melody (Grieg, "In the Hall of the Mountain King", speeding
+// up). The whole path is solved up front so that every bounce lands on a note
+// and the ball never crosses its own platforms. Each bounce leaves a glowing
+// tile and changes the ball's colour; at the end the camera pulls back to
+// reveal the drawing. URL: ?seed=N
+// ---------------------------------------------------------------------------
+const Q = new URLSearchParams(location.search);
+const CONFIG = {
+  seed: +(Q.get('seed') || 1),
+  W: 1080, H: 1920, zoom: 1.8,
+  r: 24, tileW: 96, tileT: 18, bound: +(Q.get('bound') || 1150), tileLife: 2.6,
+  speed: 1050,                  // px/s at the starting tempo
+  leadIn: 0.6, eighthStart: 0.27, eighthEnd: 0.115, reps: 4,
+  revealTime: 1.6, endHold: 3.0,
+  font: '"Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif',
+};
+
+// ---- melody (public domain) -------------------------------------------------
+const NOTE = { C: 0, 'C#': 1, D: 2, 'D#': 3, E: 4, F: 5, 'F#': 6, G: 7, 'G#': 8, A: 9, 'A#': 10, B: 11 };
+const midi = s => { const m = s.match(/^([A-G]#?)(\d)$/); return 12 * (+m[2] + 1) + NOTE[m[1]]; };
+const THEME = [['B3',1],['C#4',1],['D4',1],['E4',1],['F#4',1],['D4',1],['F#4',2],
+               ['F4',1],['C#4',1],['F4',2],['E4',1],['C4',1],['E4',2],
+               ['B3',1],['C#4',1],['D4',1],['E4',1],['F#4',1],['D4',1],['F#4',1],['B4',1],
+               ['A4',1],['F#4',1],['D4',1],['F#4',1],['A4',4]];
+// bass per half bar (in eighths): root notes
+const BASS = ['B1', 'B1', 'F#1', 'C2', 'B1', 'B1', 'D2', 'F#1'];
+function buildNotes() {
+  const c = CONFIG, notes = [], bass = [];
+  const total = c.reps * 32;
+  let t = c.leadIn, e = 0;
+  const dur8 = k => c.eighthStart * Math.pow(c.eighthEnd / c.eighthStart, k / total);
+  for (let rep = 0; rep < c.reps; rep++) {
+    const oct = rep % 2 ? 12 : 0;
+    for (const [n, len] of THEME) {
+      let d = 0; for (let k = 0; k < len; k++) d += dur8(e + k);
+      if (e % 4 === 0) { for (let h = 0; h < len; h += 4) {} }
+      notes.push({ t, dur: d, m: midi(n) + oct, rep, eighth: dur8(e) });
+      t += d; e += len;
+    }
+  }
+  // bass + beat grid
+  let tb = c.leadIn; for (let k = 0; k < total; k++) { const d = dur8(k);
+    if (k % 4 === 0) bass.push({ t: tb, m: midi(BASS[(k / 4) % 8]) + 12, rep: Math.floor(k / 32), beat: (k / 2) % 4 });
+    else if (k % 2 === 0) bass.push({ t: tb, m: -1, rep: Math.floor(k / 32), beat: (k / 2) % 4 });
+    tb += d; }
+  notes.push({ t, dur: 2.5, m: midi('B4'), rep: c.reps, eighth: c.eighthEnd, final: true });
+  return { notes, bass, end: t };
+}
+
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// ---- path solver --------------------------------------------------------------
+function segRectDist(ax, ay, bx, by, R) {
+  // distance between segment AB and axis-aligned rect R {x0,y0,x1,y1}
+  const inside = (x, y) => x >= R.x0 && x <= R.x1 && y >= R.y0 && y <= R.y1;
+  if (inside(ax, ay) || inside(bx, by)) return 0;
+  const pr = (px, py) => { const dx = Math.max(R.x0 - px, 0, px - R.x1), dy = Math.max(R.y0 - py, 0, py - R.y1); return Math.hypot(dx, dy); };
+  const ps = (px, py) => { const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
+    const u = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)); return Math.hypot(px - ax - dx * u, py - ay - dy * u); };
+  // crossing test against rect edges
+  const cross = (x1, y1, x2, y2) => { const o = (px, py, qx, qy, rx, ry) => (qx - px) * (ry - py) - (qy - py) * (rx - px);
+    return o(ax, ay, bx, by, x1, y1) * o(ax, ay, bx, by, x2, y2) < 0 && o(x1, y1, x2, y2, ax, ay) * o(x1, y1, x2, y2, bx, by) < 0; };
+  if (cross(R.x0, R.y0, R.x1, R.y0) || cross(R.x1, R.y0, R.x1, R.y1) || cross(R.x1, R.y1, R.x0, R.y1) || cross(R.x0, R.y1, R.x0, R.y0)) return 0;
+  return Math.min(pr(ax, ay), pr(bx, by), ps(R.x0, R.y0), ps(R.x1, R.y0), ps(R.x0, R.y1), ps(R.x1, R.y1));
+}
+function rectOverlap(a, b, m) { return a.x0 < b.x1 + m && a.x1 > b.x0 - m && a.y0 < b.y1 + m && a.y1 > b.y0 - m; }
+
+function solvePath(song, seed) {
+  const c = CONFIG, N = song.notes.length;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const rnd = mulberry32(seed * 1000 + attempt);
+    const P = [{ x: 0, y: 0 }], segs = [], tiles = [];
+    let budget = 60000;
+    const speedAt = i => c.speed * Math.pow(c.eighthStart / song.notes[Math.min(i, N - 1)].eighth, 0.55);
+    function dfs(i, pos, dx, dy) {
+      if (--budget < 0) return false;
+      if (i === N) return true;
+      const t0 = i ? song.notes[i - 1].t : 0, t1 = song.notes[i].t;
+      const len = speedAt(Math.max(0, i - 1)) * (t1 - t0);
+      const nx = pos.x + dx * len, ny = pos.y + dy * len;
+      if (Math.abs(nx) > c.bound || Math.abs(ny) > c.bound * 1.25) return false;
+      for (let k = tiles.length - 1; k >= 0 && tiles[k].tt > t0 - c.tileLife; k--) if (segRectDist(pos.x, pos.y, nx, ny, tiles[k]) < (k === tiles.length - 1 ? c.r - 1 : c.r + 6)) return false;
+      segs.push({ ax: pos.x, ay: pos.y, bx: nx, by: ny, tt: t1 });
+      // both choices, biased towards the centre
+      const opts = [];
+      const towardY = Math.sign(-ny) === -dy, towardX = Math.sign(-nx) === -dx;
+      opts.push({ fx: false, w: (towardY ? 1.6 : 1) * (0.5 + rnd()) });
+      opts.push({ fx: true, w: (towardX ? 1.6 : 1) * (0.5 + rnd()) });
+      opts.sort((a, b) => b.w - a.w);
+      for (const o of opts) {
+        const h = c.tileW / 2, th = c.tileT / 2, off = c.r + th;
+        const sx = Math.sign(dx), sy = Math.sign(dy);
+        const T = o.fx ? { x0: nx + sx * off - th, x1: nx + sx * off + th, y0: ny - h, y1: ny + h, v: true }
+                       : { x0: nx - h, x1: nx + h, y0: ny + sy * off - th, y1: ny + sy * off + th, v: false };
+        let ok = true;
+        for (let q = segs.length - 1; q >= 0 && segs[q].tt > t1 - c.tileLife - 0.3; q--) { const S = segs[q]; if (segRectDist(S.ax, S.ay, S.bx, S.by, { x0: T.x0 + 2, x1: T.x1 - 2, y0: T.y0 + 2, y1: T.y1 - 2 }) < c.r) { ok = false; break; } }
+        if (ok) for (let q = tiles.length - 1; q >= 0 && tiles[q].tt > t1 - c.tileLife - 0.3; q--) if (rectOverlap(T, tiles[q], 4)) { ok = false; break; }
+        T.tt = t1;
+        if (!ok) continue;
+        tiles.push(T); P.push({ x: nx, y: ny });
+        if (dfs(i + 1, { x: nx, y: ny }, o.fx ? -dx : dx, o.fx ? dy : -dy)) return true;
+        tiles.pop(); P.pop();
+      }
+      segs.pop();
+      return false;
+    }
+    const a0 = rnd() < 0.5 ? 1 : -1;
+    if (dfs(0, { x: 0, y: 0 }, a0 * Math.SQRT1_2, Math.SQRT1_2)) return { P, tiles, speedAt };
+  }
+  throw new Error('no path');
+}
+
+// ---- simulation state ----------------------------------------------------------
+let onNote = () => {}, onFinal = () => {};
+let S;
+const PALETTE = i => (i * 137.508 + 190) % 360;
+function newSim() {
+  const song = buildNotes(), path = solvePath(song, CONFIG.seed);
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (const T of path.tiles) { x0 = Math.min(x0, T.x0); x1 = Math.max(x1, T.x1); y0 = Math.min(y0, T.y0); y1 = Math.max(y1, T.y1); }
+  S = { song, path, t: 0, idx: 0, hue: 190, cam: { x: 0, y: 0, z: CONFIG.zoom }, flashes: [], parts: [],
+        rnd: mulberry32(CONFIG.seed + 7), done: false, finalT: -1, box: { x0, x1, y0, y1 }, pulse: 0, shake: 0 };
+  return S;
+}
+newSim();
+
+function ballAt(t) {
+  const { P } = S.path, notes = S.song.notes;
+  if (t <= 0) return P[0];
+  let i = 0; while (i < notes.length && notes[i].t <= t) i++;
+  if (i >= notes.length) return P[P.length - 1];
+  const t0 = i ? notes[i - 1].t : 0, t1 = notes[i].t, u = (t - t0) / (t1 - t0);
+  return { x: P[i].x + (P[i + 1].x - P[i].x) * u, y: P[i].y + (P[i + 1].y - P[i].y) * u };
+}
+
+function tick(dt) {
+  const c = CONFIG, notes = S.song.notes;
+  S.t += dt;
+  while (S.idx < notes.length && notes[S.idx].t <= S.t) {
+    const n = notes[S.idx], T = S.path.tiles[S.idx], hue = PALETTE(S.idx + 1);
+    T.hit = S.t; T.hue = hue; S.hue = hue;
+    S.flashes.push({ x: (T.x0 + T.x1) / 2, y: (T.y0 + T.y1) / 2, t: 0, hue, big: n.final ? 3 : n.dur > n.eighth * 1.5 ? 1.6 : 1 });
+    const bp = S.path.P[S.idx + 1];
+    for (let k = 0; k < (n.final ? 400 : 14); k++) { const a = S.rnd() * 6.283, v = (n.final ? 1500 : 380) * (0.3 + S.rnd());
+      S.parts.push({ x: bp.x, y: bp.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, life: n.final ? 1.6 : 0.5, hue: n.final ? S.rnd() * 360 : hue, s: n.final ? 10 : 6 }); }
+    S.pulse = n.dur > n.eighth * 1.5 ? 1 : 0.5;
+    if (n.final) { S.finalT = S.t; S.shake = 30; onFinal(); } else onNote(n);
+    S.idx++;
+  }
+  for (const f of S.flashes) f.t += dt; S.flashes = S.flashes.filter(f => f.t < 0.6);
+  for (const p of S.parts) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= Math.exp(-dt * 2.5); p.vy *= Math.exp(-dt * 2.5); }
+  S.parts = S.parts.filter(p => p.t < p.life);
+  S.pulse *= Math.exp(-dt * 8); S.shake *= Math.exp(-dt * 6);
+  // camera
+  const b = ballAt(S.t);
+  let tx = b.x, ty = b.y, tz = c.zoom * (1 - 0.18 * Math.min(1, S.t / S.song.end));
+  if (S.finalT >= 0) {
+    const B = S.box, k = Math.min(1, (S.t - S.finalT - 0.5) / c.revealTime);
+    if (k > 0) { const e = k * k * (3 - 2 * k);
+      const fz = Math.min(c.W * 0.86 / (B.x1 - B.x0), c.H * 0.62 / (B.y1 - B.y0));
+      tx = b.x + ((B.x0 + B.x1) / 2 - b.x) * e; ty = b.y + ((B.y0 + B.y1) / 2 + (B.y1 - B.y0) * 0.04 - b.y) * e; tz = tz + (fz - tz) * e; }
+    if (S.t - S.finalT > c.revealTime + 0.5 + c.endHold) S.done = true;
+  }
+  const k = S.finalT >= 0 ? 1 : 1 - Math.exp(-dt * 9);
+  S.cam.x += (tx - S.cam.x) * k; S.cam.y += (ty - S.cam.y) * k; S.cam.z += (tz - S.cam.z) * (S.finalT >= 0 ? 1 : 1 - Math.exp(-dt * 3));
+}
+
+// ---- drawing -------------------------------------------------------------------
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+function draw() {
+  const c = CONFIG, z = S.cam.z * (1 + 0.025 * S.pulse);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#050508'; ctx.fillRect(0, 0, c.W, c.H);
+  const g = ctx.createRadialGradient(c.W / 2, c.H / 2, 0, c.W / 2, c.H / 2, 1100);
+  g.addColorStop(0, hsl(S.hue, 80, 14, 0.9)); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, c.W, c.H);
+  const sx = Math.sin(S.t * 87) * S.shake, sy = Math.cos(S.t * 73) * S.shake;
+  ctx.setTransform(z, 0, 0, z, c.W / 2 - S.cam.x * z + sx, c.H / 2 - S.cam.y * z + sy);
+  const P = S.path.P, notes = S.song.notes;
+  // path drawn so far (permanent glowing line, coloured per segment)
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const b = ballAt(S.t);
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.lineWidth = pass ? 4 / Math.max(0.6, z / c.zoom) : 14 / Math.max(0.6, z / c.zoom);
+    for (let i = 0; i <= S.idx && i < P.length - 1; i++) {
+      const hue = PALETTE(i), end = i === S.idx ? b : P[i + 1];
+      ctx.strokeStyle = hsl(hue, 100, 65, pass ? 0.55 : 0.12);
+      ctx.beginPath(); ctx.moveTo(P[i].x, P[i].y); ctx.lineTo(end.x, end.y); ctx.stroke();
+    }
+  }
+  // tiles (only the ones already hit)
+  for (let i = 0; i < S.idx; i++) {
+    const T = S.path.tiles[i], age = S.t - T.hit, f = Math.max(0, 1 - age / 0.3);
+    const grow = 1 + 0.35 * f, cx = (T.x0 + T.x1) / 2, cy = (T.y0 + T.y1) / 2;
+    const w = (T.x1 - T.x0) * (T.v ? 1 : grow), h = (T.y1 - T.y0) * (T.v ? grow : 1);
+    const final = S.finalT >= 0 ? Math.max(0, Math.min(1, (S.t - S.finalT - 0.3 - i * 0.012) * 5)) : 0;
+    const life = S.finalT >= 0 ? Math.max(0.12, final) : Math.max(0.12, Math.min(1, 1 - (age - CONFIG.tileLife) / 0.4));
+    ctx.globalAlpha = life;
+    ctx.fillStyle = hsl(T.hue, 100, 55 + 30 * f + 25 * final, 0.25);
+    ctx.beginPath(); ctx.roundRect(cx - w / 2 - 8, cy - h / 2 - 8, w + 16, h + 16, 12); ctx.fill();
+    ctx.fillStyle = hsl(T.hue, 100, 60 + 35 * f + 25 * final);
+    ctx.beginPath(); ctx.roundRect(cx - w / 2, cy - h / 2, w, h, 8); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  // flashes & particles
+  ctx.globalCompositeOperation = 'lighter';
+  for (const f of S.flashes) { const k = f.t / 0.6; ctx.strokeStyle = hsl(f.hue, 100, 70, 1 - k); ctx.lineWidth = 10 * (1 - k) + 1;
+    ctx.beginPath(); ctx.arc(f.x, f.y, (20 + 160 * Math.sqrt(k)) * f.big, 0, 6.283); ctx.stroke(); }
+  for (const p of S.parts) { const a = 1 - p.t / p.life; ctx.fillStyle = hsl(p.hue, 100, 65, a); ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); }
+  ctx.globalCompositeOperation = 'source-over';
+  // the ball: plain colour, nothing else
+  if (S.finalT < 0) {
+    const r = c.r;
+    const halo = ctx.createRadialGradient(b.x, b.y, r * 0.8, b.x, b.y, r * 2.6);
+    halo.addColorStop(0, hsl(S.hue, 100, 60, 0.5)); halo.addColorStop(1, hsl(S.hue, 100, 60, 0));
+    ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(b.x, b.y, r * 2.6, 0, 6.283); ctx.fill();
+    ctx.fillStyle = hsl(S.hue, 100, 60); ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, 6.283); ctx.fill();
+  }
+  // HUD: bounce counter + progress bar
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const n = Math.min(S.idx, notes.length);
+  ctx.font = `900 120px ${c.font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 16; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(String(n), c.W / 2, 250);
+  ctx.fillStyle = '#fff'; ctx.fillText(String(n), c.W / 2, 250);
+  const bx = 190, bw = c.W - 380, by = 1640, f = n / notes.length;
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.roundRect(bx, by, bw, 16, 8); ctx.fill();
+  ctx.fillStyle = hsl(S.hue, 100, 62); ctx.beginPath(); ctx.roundRect(bx, by, Math.max(16, bw * f), 16, 8); ctx.fill();
+  if (S.finalT >= 0) { const k = Math.max(0, 1 - (S.t - S.finalT) / 0.4); if (k > 0) { ctx.fillStyle = `rgba(255,255,255,${0.8 * k})`; ctx.fillRect(0, 0, c.W, c.H); } }
+}
+
+// ---- live sound ------------------------------------------------------------------
+let AC = null;
+function playNote(m, d, v = 0.25) { if (!AC) return; const f = 440 * Math.pow(2, (m - 69) / 12), t = AC.currentTime;
+  for (const [h, a] of [[1, 1], [2, 0.4], [3, 0.15]]) { const o = AC.createOscillator(), g = AC.createGain(); o.type = 'sine'; o.frequency.value = f * h;
+    g.gain.setValueAtTime(v * a, t); g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.25, d * 1.5)); o.connect(g).connect(AC.destination); o.start(t); o.stop(t + d * 1.5 + 0.3); } }
+let last = 0, acc = 0;
+function loop(ts) { if (!last) last = ts; acc += Math.min(0.1, (ts - last) / 1000); last = ts;
+  while (acc >= 1 / 60) { tick(1 / 60); acc -= 1 / 60; } draw(); requestAnimationFrame(loop); }
+document.getElementById('start').onclick = (e) => { e.target.remove(); AC = new AudioContext();
+  onNote = n => playNote(n.m, n.dur); onFinal = () => { for (const m of [47, 59, 66, 71]) playNote(m, 2.5, 0.2); }; requestAnimationFrame(loop); };
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') newSim(); });
+draw();
+window.__sim = () => S; window.__tick = tick; window.__draw = draw;
+</script>
+</body>
+</html>
