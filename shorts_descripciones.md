@@ -1,5 +1,22 @@
 # Descripciones para YouTube Shorts
 
+## shape_escape_seed7.mp4 (escape_sim/renders)
+**Title (EN):** Can the ball escape all 6 shapes? 😮‍💨 (it never ends)
+
+Triangle → Square → Pentagon → Hexagon → Octagon → Decagon 🔺🟪⬟⬢
+Every escape gets harder… and that last one is SO close 😱
+Watch it again… where does it start? 🔁
+
+#shorts #satisfying #oddlysatisfying #loop #asmr #physics
+
+**Título (ES):** ¿Podrá la bola escapar de las 6 formas? 😮‍💨 (no se acaba nunca)
+
+Triángulo → Cuadrado → Pentágono → Hexágono → Octágono → Decágono 🔺🟪⬟⬢
+Cada escape es más difícil… y el último está a nada 😱
+Míralo otra vez… ¿dónde empieza? 🔁
+
+#shorts #satisfying #oddlysatisfying #loop #asmr #fisica
+
 ## melody_bounce_mountain_king.mp4 (melody_sim/renders)
 **Title (EN):** Every bounce is a note 🎹 (wait for the drawing at the end)
 

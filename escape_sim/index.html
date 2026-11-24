@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shape Escape</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; font: 20px system-ui, sans-serif; background: rgba(0,0,0,.55); cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="start">Click para empezar (R reinicia)</div>
+<script>
+// ---------------------------------------------------------------------------
+// Shape Escape: a plain ball must escape a stack of nested spinning shapes
+// (triangle -> square -> pentagon -> hexagon -> octagon -> circle). Each shape
+// has one gap that slowly widens. Every escape shatters the shape and the
+// camera pulls back. Near misses at the gap edge trigger a short slow-motion.
+// The loop opens on a white flash + explosion and ends on the same flash,
+// so the seam is invisible and the video starts at full intensity.
+// URL: ?seed=N
+// ---------------------------------------------------------------------------
+const Q = new URLSearchParams(location.search);
+const CONFIG = {
+  seed: +(Q.get('seed') || 1),
+  W: 1080, H: 1920, cy: 1000,
+  sides: [3, 4, 5, 6, 8, 10],
+  R0: 470, grow: 1.6, r0: 27, v0: +(Q.get('v0') || 1750), speedUp: 0.07,
+  spin0: 1.5, spinStep: 0.28,
+  gap0: +(Q.get('gap0') || 0.2), gapRate: [0.5, 0.36, 0.28, 0.22, 0.17, 0.13],   // fraction of the side per second
+  nearDist: 1.6, nearSlow: 0.32, nearTime: 0.2, nearCooldown: 0.7,
+  escSlow: 0.4, escTime: 0.22, finalSlow: 0.3, finalTime: 0.55, flashTime: 0.32,
+  font: '"Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif',
+};
+
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+let onBounce = () => {}, onNear = () => {}, onEscape = () => {}, onFinal = () => {}, onStart = () => {};
+let S;
+const L = k => ({ n: CONFIG.sides[k], R: CONFIG.R0 * Math.pow(CONFIG.grow, k), r: CONFIG.r0 * Math.pow(CONFIG.grow, k),
+                  v: CONFIG.v0 * Math.pow(CONFIG.grow, k) * (1 + CONFIG.speedUp * k), w: (CONFIG.spin0 + CONFIG.spinStep * k) * (k % 2 ? -1 : 1) });
+
+function newSim() {
+  const c = CONFIG, rnd = mulberry32(c.seed);
+  const a = rnd() * 6.283;
+  S = { rnd, t: 0, vt: 0, level: 0, lt: 0, x: 0, y: 0, vx: Math.cos(a) * c.v0, vy: Math.sin(a) * c.v0, r: c.r0,
+        ang: rnd() * 6.283, hue: 200, bounces: 0, zoom: 1, zoomFrom: 1, zoomT: 1,
+        parts: [], pieces: [], rings: [], trail: [], slowT: 0, slowScale: 1, lastNear: -9, nears: [0, 0, 0, 0, 0, 0],
+        flash: 1, final: -1, loopDone: false, pulse: 0, shake: 0, levelT: [], escPop: 0 };
+  // intro burst: the loop opens mid-explosion
+  for (let i = 0; i < 260; i++) { const a = rnd() * 6.283, v = 300 + rnd() * 2200;
+    S.parts.push({ x: 0, y: 0, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, life: 0.5 + rnd() * 0.8, hue: rnd() * 360, s: 6 + rnd() * 10 }); }
+  S.rings.push({ t: 0, R: 1400, hue: 0, w: 1 });
+  onStart();
+  return S;
+}
+
+function polyVerts(k, ang) {
+  const { n, R } = L(k), out = [];
+  for (let i = 0; i < n; i++) { const a = ang + (i + 0.5) * 6.2832 / n - Math.PI / 2; out.push([Math.cos(a) * R, Math.sin(a) * R]); }
+  return out;
+}
+function gapWidth() { const c = CONFIG, lv = L(S.level), side = 2 * lv.R * Math.sin(Math.PI / lv.n);
+  return side * Math.min(0.9, c.gap0 + c.gapRate[S.level] * S.lt); }
+// edges of the current shape; edge 0 has the gap in its middle
+function edges(k, ang, gap) {
+  const V = polyVerts(k, ang), n = V.length, E = [];
+  for (let i = 0; i < n; i++) {
+    const A = V[i], B = V[(i + 1) % n];
+    if (i === 0 && gap > 0) {
+      const dx = B[0] - A[0], dy = B[1] - A[1], len = Math.hypot(dx, dy), u = (len - gap) / 2 / len;
+      E.push([A[0], A[1], A[0] + dx * u, A[1] + dy * u, 'gapA']);
+      E.push([B[0] - dx * u, B[1] - dy * u, B[0], B[1], 'gapB']);
+    } else E.push([A[0], A[1], B[0], B[1], '']);
+  }
+  return E;
+}
+
+function burst(x, y, n, sp, life, size, hue) {
+  for (let i = 0; i < n; i++) { const a = S.rnd() * 6.283, v = sp * (0.3 + S.rnd());
+    S.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, life: life * (0.5 + S.rnd()), hue: hue == null ? S.rnd() * 360 : hue, s: size * (0.5 + S.rnd()) }); }
+}
+
+function escape() {
+  const c = CONFIG, k = S.level, lv = L(k);
+  // shatter the shape into flying pieces
+  for (const e of edges(k, S.ang, gapWidth())) {
+    const parts = 3;
+    for (let p = 0; p < parts; p++) {
+      const u0 = p / parts, u1 = (p + 1) / parts;
+      const x0 = e[0] + (e[2] - e[0]) * u0, y0 = e[1] + (e[3] - e[1]) * u0, x1 = e[0] + (e[2] - e[0]) * u1, y1 = e[1] + (e[3] - e[1]) * u1;
+      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2, d = Math.hypot(mx, my) || 1, sp = lv.v * (0.6 + 0.8 * S.rnd());
+      S.pieces.push({ x: mx, y: my, hx: (x1 - x0) / 2, hy: (y1 - y0) / 2, a: 0, va: (S.rnd() - 0.5) * 12,
+                      vx: mx / d * sp, vy: my / d * sp, t: 0, life: 1.2, hue: (k * 60 + 200) % 360, w: lv.r * 0.55 });
+    }
+  }
+  burst(S.x, S.y, 90, lv.v * 1.4, 0.8, lv.r * 0.35, S.hue);
+  S.rings.push({ t: 0, R: lv.R * 1.6, hue: S.hue, w: lv.r / CONFIG.r0 });
+  S.levelT.push(+S.vt.toFixed(2));
+  S.shake = 26; S.escPop = 1;
+  if (k === c.sides.length - 1) {
+    S.final = S.vt; S.slowT = c.finalTime; S.slowScale = c.finalSlow;
+    burst(S.x, S.y, 500, lv.v * 2.5, 1.6, lv.r * 0.6, null);
+    onFinal(); return;
+  }
+  S.level++; S.lt = 0;
+  const nl = L(S.level), sp = Math.hypot(S.vx, S.vy);
+  S.vx *= nl.v / sp; S.vy *= nl.v / sp;
+  S.zoomFrom = S.zoom; S.zoomT = 0;
+  S.slowT = c.escTime; S.slowScale = c.escSlow;
+  onEscape(S.level);
+}
+
+function physics(dt) {
+  const c = CONFIG, lv = L(S.level);
+  S.ang += lv.w * dt;
+  S.r += (lv.r - S.r) * Math.min(1, dt * 8);
+  S.x += S.vx * dt; S.y += S.vy * dt;
+  if (S.final >= 0) return;
+  const E = edges(S.level, S.ang, gapWidth());
+  for (const e of E) {
+    const dx = e[2] - e[0], dy = e[3] - e[1], l2 = dx * dx + dy * dy;
+    const u = Math.max(0, Math.min(1, ((S.x - e[0]) * dx + (S.y - e[1]) * dy) / l2));
+    const qx = e[0] + dx * u, qy = e[1] + dy * u;
+    let nx = S.x - qx, ny = S.y - qy; const d = Math.hypot(nx, ny);
+    if (d >= S.r || d === 0) continue;
+    nx /= d; ny /= d;
+    // the inside of the shape is towards the centre: only push inward for full-edge hits
+    S.x = qx + nx * S.r; S.y = qy + ny * S.r;
+    const wx = -lv.w * qy, wy = lv.w * qx;               // wall velocity
+    const rvx = S.vx - wx, rvy = S.vy - wy, vn = rvx * nx + rvy * ny;
+    if (vn < 0) {
+      S.vx -= 2 * vn * nx; S.vy -= 2 * vn * ny;
+      const a = (S.rnd() - 0.5) * 0.08, co = Math.cos(a), si = Math.sin(a);
+      const vx = S.vx * co - S.vy * si; S.vy = S.vx * si + S.vy * co; S.vx = vx;
+      const sp = Math.hypot(S.vx, S.vy); S.vx *= lv.v / sp; S.vy *= lv.v / sp;
+      S.bounces++; S.hue = (S.hue + 47) % 360; S.pulse = 1;
+      burst(qx, qy, 10, lv.v * 0.5, 0.35, lv.r * 0.22, S.hue);
+      // near miss: bounced off the very edge of the gap
+      const nearEdge = e[4] === 'gapA' ? u > 0.5 : e[4] === 'gapB' ? u < 0.5 : false;
+      const endX = e[4] === 'gapA' ? e[2] : e[0], endY = e[4] === 'gapA' ? e[3] : e[1];
+      if (nearEdge && Math.hypot(qx - endX, qy - endY) < S.r * c.nearDist && S.vt - S.lastNear > c.nearCooldown) {
+        S.lastNear = S.vt; S.slowT = c.nearTime; S.slowScale = c.nearSlow; S.nears[S.level]++;
+        S.rings.push({ t: 0, R: lv.r * 6, hue: 0, w: lv.r / CONFIG.r0, x: endX, y: endY, near: true });
+        onNear(S.level);
+      } else onBounce(S.bounces, S.level);
+    }
+  }
+  // escaped?
+  // escaped = centre is past the gap edge's line (the only way out)
+  const V = polyVerts(S.level, S.ang), mx = (V[0][0] + V[1][0]) / 2, my = (V[0][1] + V[1][1]) / 2, ml = Math.hypot(mx, my);
+  if ((S.x * mx + S.y * my) / ml > ml + S.r * 1.05) escape();
+}
+
+function tick(dt) {
+  const c = CONFIG; S.vt += dt;
+  let scale = 1; if (S.slowT > 0) { S.slowT -= dt; scale = S.slowScale; }
+  const sdt = dt * scale; S.t += sdt; S.lt += sdt;
+  for (let k = 0; k < 8; k++) physics(sdt / 8);
+  S.trail.unshift([S.x, S.y, S.hue, S.r]); if (S.trail.length > 12) S.trail.pop();
+  for (const p of S.parts) { p.t += sdt; p.x += p.vx * sdt; p.y += p.vy * sdt; p.vx *= Math.exp(-sdt * 2); p.vy *= Math.exp(-sdt * 2); }
+  S.parts = S.parts.filter(p => p.t < p.life); if (S.parts.length > 3500) S.parts.splice(0, S.parts.length - 3500);
+  for (const p of S.pieces) { p.t += sdt; p.x += p.vx * sdt; p.y += p.vy * sdt; p.a += p.va * sdt; p.vx *= Math.exp(-sdt * 1.2); p.vy *= Math.exp(-sdt * 1.2); }
+  S.pieces = S.pieces.filter(p => p.t < p.life);
+  for (const r of S.rings) r.t += dt; S.rings = S.rings.filter(r => r.t < 0.6);
+  S.flash *= Math.exp(-dt * 7); S.pulse *= Math.exp(-dt * 10); S.shake *= Math.exp(-dt * 8); S.escPop *= Math.exp(-dt * 6);
+  // camera zoom eases out after each escape
+  S.zoomT = Math.min(1, S.zoomT + dt / 0.55);
+  const target = 1 / Math.pow(c.grow, S.level), e = 1 - Math.pow(1 - S.zoomT, 3);
+  S.zoom = S.zoomFrom + (target - S.zoomFrom) * e;
+  if (S.final >= 0) {
+    const k = (S.vt - S.final - (c.finalTime - c.flashTime)) / c.flashTime;
+    S.zoom = target * (1 + 0.6 * Math.max(0, (S.vt - S.final) / c.finalTime));
+    if (k > 0) S.flash = Math.max(S.flash, Math.min(1, k));
+    if (k >= 1) S.loopDone = true;
+  }
+}
+
+// ------------------------------------------------------------------ drawing
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+const SHAPE_HUE = k => (k * 60 + 200) % 360;
+function draw() {
+  const c = CONFIG;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#04030a'; ctx.fillRect(0, 0, c.W, c.H);
+  const bg = ctx.createRadialGradient(c.W / 2, c.cy, 0, c.W / 2, c.cy, 1100);
+  bg.addColorStop(0, hsl(SHAPE_HUE(S.level), 90, 16 + 10 * S.escPop, 1)); bg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, c.W, c.H);
+  const z = S.zoom * (1 + 0.015 * S.pulse + 0.05 * S.escPop);
+  const sx = Math.sin(S.vt * 89) * S.shake, sy = Math.cos(S.vt * 71) * S.shake;
+  ctx.setTransform(z, 0, 0, z, c.W / 2 + sx, c.cy + sy);
+  const px = 1 / z;   // one screen pixel in world units
+  // outer shapes still waiting (dim) — gives the "how many layers left" tension
+  for (let k = c.sides.length - 1; k > S.level; k--) {
+    const V = polyVerts(k, S.ang * (k % 2 ? -0.6 : 0.6) + k), h = SHAPE_HUE(k);
+    ctx.lineWidth = 10 * px; ctx.strokeStyle = hsl(h, 90, 60, 0.22); ctx.lineJoin = 'round';
+    ctx.beginPath(); V.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.stroke();
+  }
+  // current shape
+  if (S.final < 0) {
+    const E = edges(S.level, S.ang, gapWidth()), h = SHAPE_HUE(S.level);
+    ctx.lineCap = 'round';
+    for (const [w, l, a] of [[34, 60, 0.25], [16, 70, 1]]) {
+      ctx.lineWidth = w * px; ctx.strokeStyle = hsl(h, 100, l, a);
+      ctx.beginPath(); for (const e of E) { ctx.moveTo(e[0], e[1]); ctx.lineTo(e[2], e[3]); } ctx.stroke();
+    }
+    // gap edges glow red: the exit
+    for (const e of E) if (e[4]) { const x = e[4] === 'gapA' ? e[2] : e[0], y = e[4] === 'gapA' ? e[3] : e[1];
+      ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.beginPath(); ctx.arc(x, y, 12 * px, 0, 6.283); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.beginPath(); ctx.arc(x, y, 30 * px, 0, 6.283); ctx.fill(); }
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of S.pieces) { const a = 1 - p.t / p.life; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a);
+    ctx.strokeStyle = hsl(p.hue, 100, 65, a); ctx.lineWidth = 16 * px; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-p.hx, -p.hy); ctx.lineTo(p.hx, p.hy); ctx.stroke(); ctx.restore(); }
+  for (const p of S.parts) { const a = 1 - p.t / p.life, s = p.s; ctx.fillStyle = hsl(p.hue, 100, 65, a); ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s); }
+  for (const r of S.rings) { const k = r.t / 0.6; ctx.strokeStyle = r.near ? `rgba(255,255,255,${1 - k})` : hsl(r.hue, 100, 70, 1 - k);
+    ctx.lineWidth = (r.near ? 6 : 22) * px * (1 - k) + px; ctx.beginPath(); ctx.arc(r.x || 0, r.y || 0, (r.near ? r.R : r.R) * Math.sqrt(k) + 10 * px, 0, 6.283); ctx.stroke(); }
+  // trail + ball (plain colour)
+  S.trail.forEach(([x, y, h, r], i) => { if (!i) return; const k = 1 - i / S.trail.length;
+    ctx.fillStyle = hsl(h, 100, 60, 0.25 * k); ctx.beginPath(); ctx.arc(x, y, r * (0.4 + 0.6 * k), 0, 6.283); ctx.fill(); });
+  ctx.globalCompositeOperation = 'source-over';
+  if (S.final < 0) {
+    const halo = ctx.createRadialGradient(S.x, S.y, S.r * 0.8, S.x, S.y, S.r * 2.4);
+    halo.addColorStop(0, hsl(S.hue, 100, 60, 0.55)); halo.addColorStop(1, hsl(S.hue, 100, 60, 0));
+    ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(S.x, S.y, S.r * 2.4, 0, 6.283); ctx.fill();
+    ctx.fillStyle = hsl(S.hue, 100, 60); ctx.beginPath(); ctx.arc(S.x, S.y, S.r, 0, 6.283); ctx.fill();
+  }
+  // HUD: layers left + progress bar
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const left = c.sides.length - S.level - (S.final >= 0 ? 1 : 0), pop = 1 + 0.35 * S.escPop;
+  ctx.save(); ctx.translate(c.W / 2, 250); ctx.scale(pop, pop);
+  ctx.font = `900 130px ${c.font}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 16; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(String(left), 0, 0);
+  ctx.fillStyle = '#fff'; ctx.fillText(String(left), 0, 0); ctx.restore();
+  const bx = 190, bw = c.W - 380, by = 1700, f = (c.sides.length - left) / c.sides.length;
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.roundRect(bx, by, bw, 16, 8); ctx.fill();
+  ctx.fillStyle = hsl(S.hue, 100, 62); ctx.beginPath(); ctx.roundRect(bx, by, Math.max(16, bw * f), 16, 8); ctx.fill();
+  if (S.flash > 0.004) { ctx.fillStyle = `rgba(255,255,255,${Math.min(1, S.flash)})`; ctx.fillRect(0, 0, c.W, c.H); }
+}
+
+// ------------------------------------------------------------- live sound
+let AC = null;
+function tone(f, d, type = 'triangle', v = 0.15) { if (!AC) return; const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.value = f; g.gain.setValueAtTime(v, AC.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + d);
+  o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + d); }
+let last = 0, acc = 0;
+function loop(ts) { if (!last) last = ts; acc += Math.min(0.1, (ts - last) / 1000); last = ts;
+  while (acc >= 1 / 60) { tick(1 / 60); if (S.loopDone) newSim(); acc -= 1 / 60; } draw(); requestAnimationFrame(loop); }
+document.getElementById('start').onclick = (e) => { e.target.remove(); AC = new AudioContext();
+  const P = [0, 3, 5, 7, 10]; onBounce = (n, k) => tone(330 * Math.pow(2, (P[n % 5] + 12 * Math.floor((n % 15) / 5) + k * 2) / 12), 0.2);
+  onNear = () => tone(1800, 0.3, 'sine', 0.2); onEscape = () => tone(80, 0.6, 'sawtooth', 0.3); onFinal = () => tone(50, 1, 'sawtooth', 0.4);
+  requestAnimationFrame(loop); };
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') newSim(); });
+newSim(); draw();
+window.__sim = () => S; window.__tick = tick; window.__draw = draw;
+</script>
+</body>
+</html>
