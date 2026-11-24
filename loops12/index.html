@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop Lab</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+    color: #fff; font: 20px system-ui, sans-serif; background: rgba(0,0,0,.55); cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="start">Click para empezar<br><small>?mode=gates|split|morph|shrink|wall|orbit|pendulum|poly|galton|corner|chain|paint&amp;seed=N · R reinicia</small></div>
+<script>
+// ---------------------------------------------------------------------------
+// Loop Lab: 12 different loop formats sharing one engine (plain balls that
+// change colour on every bounce, particles, slow-motion, HUD, sound events).
+// Two loop techniques:
+//   - flash seam: the video ends on a white flash after the finale and opens
+//     on the same flash + explosion (gates, split, morph, shrink, wall, orbit,
+//     galton, corner, chain, paint)
+//   - exact seam: the motion is periodic and returns to frame 0 (pendulum, poly)
+// ---------------------------------------------------------------------------
+const Q = new URLSearchParams(location.search);
+const MODE = Q.get('mode') || 'gates';
+const SEED = +(Q.get('seed') || 1);
+const W = 1080, H = 1920, CY = 1000;
+const FONT = '"Montserrat", "Arial Black", "Helvetica Neue", Arial, sans-serif';
+
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const TAU = Math.PI * 2;
+const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+const rot = (x, y, a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
+
+// --------------------------------------------------------------- engine state
+let S, EV = [];
+let liveSound = null;
+function ev(type, a = 0, b = 0) { EV.push([type, +S.vt.toFixed(4), a, b]); if (liveSound) liveSound(type, a, b); }
+function burst(x, y, n, sp, life, size, hue) {
+  for (let i = 0; i < n; i++) { const a = S.rnd() * TAU, v = sp * (0.25 + S.rnd());
+    S.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0, life: life * (0.5 + S.rnd()), hue: hue == null ? S.rnd() * 360 : hue, s: size * (0.5 + S.rnd()) }); }
+}
+function ring(x, y, R, hue, w = 1) { S.rings.push({ x, y, R, hue, w, t: 0 }); }
+function slow(time, scale) { S.slowT = time; S.slowScale = scale; }
+function nextHue() { S.hue = (S.hue + 47) % 360; return S.hue; }
+function finish(x = 0, y = 0, scale = 1) {
+  if (S.endT >= 0) return;
+  S.endT = S.vt; S.shake = 34; slow(0.45, 0.3);
+  burst(x, y, 500, 2200 * scale, 1.5, 14 * scale, null); ring(x, y, 1600 * scale, 0, 2);
+  ev('F');
+}
+function drawBall(x, y, r, hue, glow = 2.4) {
+  const g = ctx.createRadialGradient(x, y, r * 0.8, x, y, r * glow);
+  g.addColorStop(0, hsl(hue, 100, 60, 0.55)); g.addColorStop(1, hsl(hue, 100, 60, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * glow, 0, TAU); ctx.fill();
+  ctx.fillStyle = hsl(hue, 100, 60); ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+}
+// reflect a ball off a segment (with optional wall velocity); returns contact info or null
+function segHit(b, x1, y1, x2, y2, r, wvx = 0, wvy = 0) {
+  const dx = x2 - x1, dy = y2 - y1, l2 = dx * dx + dy * dy;
+  const u = Math.max(0, Math.min(1, ((b.x - x1) * dx + (b.y - y1) * dy) / l2));
+  const qx = x1 + dx * u, qy = y1 + dy * u; let nx = b.x - qx, ny = b.y - qy; const d = Math.hypot(nx, ny);
+  if (d >= r || d === 0) return null;
+  nx /= d; ny /= d; b.x = qx + nx * r; b.y = qy + ny * r;
+  const rvx = b.vx - wvx, rvy = b.vy - wvy, vn = rvx * nx + rvy * ny;
+  if (vn >= 0) return null;
+  b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny; return { x: qx, y: qy, u };
+}
+function jitter(b, amt) { const a = (S.rnd() - 0.5) * amt; [b.vx, b.vy] = rot(b.vx, b.vy, a); }
+function setSpeed(b, v) { const s = Math.hypot(b.vx, b.vy) || 1; b.vx *= v / s; b.vy *= v / s; }
+
+// =============================================================== the 12 modes
+const MODES = {};
+
+// 1 ─ GATES: rings made of rotating barrier arcs, ball escapes outward
+MODES.gates = {
+  init(M) { M.rings = []; const G = [46, 38, 31, 26, 22];
+    for (let k = 0; k < 5; k++) M.rings.push({ R: 120 + 82 * k, th: 14, gap: G[k] * Math.PI / 180, ang: S.rnd() * TAU, w: (1.1 + 0.3 * k) * (k % 2 ? -1 : 1), alive: true, hue: (200 + k * 50) % 360 });
+    const a = S.rnd() * TAU; M.b = { x: 0, y: 0, vx: Math.cos(a) * 820, vy: Math.sin(a) * 820, r: 12 }; M.lastNear = -9; M.lastP = -1; M.done = 0; S.z = 2.3; },
+  step(M, dt) { const b = M.b; b.x += b.vx * dt; b.y += b.vy * dt;
+    const d = Math.hypot(b.x, b.y), A = Math.atan2(b.y, b.x);
+    for (const R of M.rings) { if (!R.alive) continue; R.ang += R.w * dt; }
+    for (const R of M.rings) { if (!R.alive) continue;
+      const span = TAU / 3, arc = span - R.gap, rel = ((A - R.ang) % span + span) % span;
+      if (Math.abs(d - R.R) < b.r + R.th / 2) {
+        if (rel < arc) { const s = Math.sign(d - R.R) || 1, nx = b.x / d * s, ny = b.y / d * s;
+          const tx = -b.y / d, ty = b.x / d, wv = R.w * R.R;
+          const vn = b.vx * nx + b.vy * ny; if (vn < 0) { b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny; b.vx += tx * wv * 0.15; b.vy += ty * wv * 0.15;
+            jitter(b, 0.06); setSpeed(b, 820 * (1 + 0.05 * M.done)); const r = R.R + s * (b.r + R.th / 2); b.x = b.x / d * r; b.y = b.y / d * r;
+            nextHue(); S.pulse = 1; burst(b.x - nx * b.r, b.y - ny * b.r, 8, 300, 0.3, 5, S.hue); if (S.vt - M.lastP > 0.04) { M.lastP = S.vt; ev('p', S.count++ % 10, M.done); } }
+        }
+      }
+      // arc end caps (the edges of each gap) -> near misses
+      if (rel >= arc && Math.abs(d - R.R) < b.r + R.th) for (let j = 0; j < 3; j++) for (const e of [0, 1]) {
+        const ea = R.ang + j * span + (e ? span - R.gap : 0) + (e ? 0 : 0), cx = Math.cos(ea) * R.R, cy = Math.sin(ea) * R.R;
+        const hit = segHit(b, cx, cy, cx + 0.01, cy, b.r + R.th / 2);
+        if (hit) { nextHue(); setSpeed(b, 820 * (1 + 0.05 * M.done));
+          if (S.vt - M.lastNear > 0.8) { M.lastNear = S.vt; slow(0.18, 0.3); ring(cx, cy, 90, 0, 0.5); ev('t'); } else if (S.vt - M.lastP > 0.04) { M.lastP = S.vt; ev('p', S.count++ % 10, M.done); } }
+      }
+    }
+    const cur = M.rings.find(R => R.alive);
+    if (cur && d > cur.R + b.r + cur.th) { cur.alive = false; M.done++;
+      for (let k = 0; k < 60; k++) { const a = S.rnd() * TAU; S.parts.push({ x: Math.cos(a) * cur.R, y: Math.sin(a) * cur.R, vx: Math.cos(a) * (300 + S.rnd() * 900), vy: Math.sin(a) * (300 + S.rnd() * 900), t: 0, life: 0.8, hue: cur.hue, s: 9 }); }
+      ring(0, 0, cur.R * 2.2, cur.hue, 1.5); S.shake = 18; S.pop = 1; ev('k', M.done / 5); slow(0.15, 0.4);
+      if (!M.rings.some(R => R.alive)) finish(b.x, b.y, 0.6); }
+    const nxt = M.rings.find(R => R.alive); S.zTarget = nxt ? Math.min(2.3, 400 / (nxt.R + 30)) : 0.9;
+    S.left = M.rings.filter(R => R.alive).length; S.prog = M.done / 5; },
+  draw(M) { const px = 1 / S.zc;
+    for (const R of M.rings) { if (!R.alive) continue; const span = TAU / 3;
+      for (const [w, a] of [[R.th * 2.4, 0.2], [R.th, 1]]) { ctx.lineWidth = w; ctx.strokeStyle = hsl(R.hue, 100, 62, a); ctx.lineCap = 'round';
+        for (let j = 0; j < 3; j++) { ctx.beginPath(); ctx.arc(0, 0, R.R, R.ang + j * span, R.ang + j * span + span - R.gap); ctx.stroke(); } } }
+    if (S.endT < 0) drawBall(M.b.x, M.b.y, M.b.r, S.hue); },
+};
+
+// 2 ─ SPLIT: one ball splits on its bounces until 256 balls fill the circle
+MODES.split = {
+  init(M) { M.R = 470; const a = S.rnd() * TAU; M.balls = [{ x: 0, y: 0, vx: Math.cos(a) * 760, vy: Math.sin(a) * 760, age: 0, hue: 200 }]; M.cap = 256; M.lastP = -1; S.z = 1; },
+  step(M, dt) { const R = M.R, r = 12, add = [];
+    for (const b of M.balls) { b.x += b.vx * dt; b.y += b.vy * dt; b.age += dt; const d = Math.hypot(b.x, b.y);
+      if (d > R - r) { const nx = b.x / d, ny = b.y / d, vn = b.vx * nx + b.vy * ny; b.x = nx * (R - r); b.y = ny * (R - r);
+        if (vn > 0) { b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny; jitter(b, 0.1); b.hue = (b.hue + 47) % 360;
+          if (S.vt - M.lastP > 0.045) { M.lastP = S.vt; ev('p', Math.floor(Math.log2(M.balls.length)) + (S.count++ % 3), 0); }
+          if (S.rnd() < 0.5) burst(b.x, b.y, 3, 200, 0.25, 4, b.hue);
+          if (b.age > 1.05 && M.balls.length + add.length < M.cap) { b.age = 0; const c = { ...b }; [b.vx, b.vy] = rot(b.vx, b.vy, 0.32); [c.vx, c.vy] = rot(c.vx, c.vy, -0.32); c.hue = (c.hue + 180) % 360; add.push(c); } } } }
+    if (add.length) { const before = M.balls.length; M.balls.push(...add);
+      if (Math.floor(Math.log2(M.balls.length)) > Math.floor(Math.log2(before))) { S.pop = 1; ring(0, 0, M.R * 1.2, S.hue, 1); ev('k', Math.log2(M.balls.length) / 8); nextHue(); } }
+    S.left = M.balls.length; S.prog = Math.log2(M.balls.length) / 8;
+    if (M.balls.length >= M.cap && S.endT < 0) { M.full = (M.full || 0) + dt; if (M.full > 0.6) finish(0, 0, 0.8); } },
+  draw(M) { ctx.lineWidth = 10; ctx.strokeStyle = hsl(S.hue, 100, 70, 0.9); ctx.beginPath(); ctx.arc(0, 0, M.R + 5, 0, TAU); ctx.stroke();
+    if (S.endT >= 0) return; for (const b of M.balls) { ctx.fillStyle = hsl(b.hue, 100, 60); ctx.beginPath(); ctx.arc(b.x, b.y, 12, 0, TAU); ctx.fill(); } },
+};
+
+// 3 ─ MORPH: gravity ball in a spinning polygon that gains a side on every bounce
+MODES.morph = {
+  init(M) { M.n = 3; M.R = 450; M.ang = S.rnd() * TAU; M.w = 0.8; M.b = { x: 0, y: -60, vx: 420 * (S.rnd() < 0.5 ? 1 : -1), vy: 0, r: 30 }; M.max = 26; S.z = 1; },
+  verts(M) { const out = []; for (let i = 0; i < M.n; i++) { const a = M.ang + i * TAU / M.n - Math.PI / 2; out.push([Math.cos(a) * M.R, Math.sin(a) * M.R]); } return out; },
+  step(M, dt) { const b = M.b; M.ang += M.w * dt; b.vy += 2300 * dt; b.x += b.vx * dt; b.y += b.vy * dt;
+    const V = this.verts(M);
+    for (let i = 0; i < V.length; i++) { const A = V[i], B = V[(i + 1) % V.length], mx = (A[0] + B[0]) / 2, my = (A[1] + B[1]) / 2, ml = Math.hypot(mx, my);
+      const nx = -mx / ml, ny = -my / ml, dist = (b.x - A[0]) * nx + (b.y - A[1]) * ny;
+      if (dist >= b.r) continue;
+      b.x += nx * (b.r - dist); b.y += ny * (b.r - dist);
+      const wvx = -M.w * b.y, wvy = M.w * b.x, vn = (b.vx - wvx) * nx + (b.vy - wvy) * ny;
+      if (vn >= 0) continue;
+      b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny;
+      const sp = Math.hypot(b.vx, b.vy); setSpeed(b, Math.max(1050, Math.min(1700, sp))); jitter(b, 0.05);
+      const hx = b.x - nx * b.r, hy = b.y - ny * b.r;
+      nextHue(); S.pulse = 1; burst(hx, hy, 12, 380, 0.35, 6, S.hue); ev('p', M.n, 0);
+      if (M.n < M.max) { M.n++; M.w = Math.min(4.5, Math.abs(M.w) * 1.07) * (M.n % 5 === 0 ? -Math.sign(M.w) : Math.sign(M.w)); if (M.n % 5 === 0) { ring(0, 0, M.R * 1.3, S.hue, 1); S.pop = 1; ev('k', M.n / M.max); } }
+      else if (S.endT < 0) finish(b.x, b.y, 0.8);
+      break; }
+    S.left = M.n; S.prog = (M.n - 3) / (M.max - 3); },
+  draw(M) { const V = this.verts(M);
+    if (S.endT < 0) { for (const [w, a] of [[34, 0.22], [14, 1]]) { ctx.lineWidth = w; ctx.lineJoin = 'round'; ctx.strokeStyle = hsl((S.hue + 180) % 360, 100, 65, a);
+      ctx.beginPath(); V.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.stroke(); }
+      drawBall(M.b.x, M.b.y, M.b.r, S.hue); } },
+};
+
+// 4 ─ SHRINK: two balls in a circle that shrinks every time they collide
+MODES.shrink = {
+  init(M) { M.R = 490; M.R0 = 490; M.r = 34; M.balls = [0, 1].map(i => { const a = S.rnd() * TAU; return { x: i ? 160 : -160, y: 0, vx: Math.cos(a) * 900, vy: Math.sin(a) * 900, hue: i ? 20 : 200 }; }); S.z = 1; },
+  step(M, dt) { const r = M.r;
+    for (const b of M.balls) { b.x += b.vx * dt; b.y += b.vy * dt; const d = Math.hypot(b.x, b.y);
+      if (d > M.R - r) { const nx = b.x / d, ny = b.y / d, vn = b.vx * nx + b.vy * ny; b.x = nx * (M.R - r); b.y = ny * (M.R - r);
+        if (vn > 0) { b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny; jitter(b, 0.12); b.hue = (b.hue + 47) % 360; M.R *= 0.99; S.count++;
+          burst(b.x + nx * r, b.y + ny * r, 8, 300, 0.3, 5, b.hue); ev('p', S.count % 10, 0); } } }
+    const [P, Q2] = M.balls, dx = Q2.x - P.x, dy = Q2.y - P.y, d = Math.hypot(dx, dy);
+    if (d < 2 * r && d > 0) { const nx = dx / d, ny = dy / d, ov = (2 * r - d) / 2; P.x -= nx * ov; P.y -= ny * ov; Q2.x += nx * ov; Q2.y += ny * ov;
+      const rel = (Q2.vx - P.vx) * nx + (Q2.vy - P.vy) * ny;
+      if (rel < 0) { P.vx += rel * nx; P.vy += rel * ny; Q2.vx -= rel * nx; Q2.vy -= rel * ny; M.R *= 0.94; if (S.vt - (M.lastK || -1) < 0.12) return; M.lastK = S.vt; S.pop = 1; S.shake = 14;
+        burst((P.x + Q2.x) / 2, (P.y + Q2.y) / 2, 40, 700, 0.6, 8, null); ring((P.x + Q2.x) / 2, (P.y + Q2.y) / 2, 260, S.hue, 1); nextHue(); ev('k', 1 - (M.R - 2.4 * r) / (M.R0 - 2.4 * r)); slow(0.1, 0.35); } }
+    for (const b of M.balls) setSpeed(b, 900 * (1 + 0.6 * (1 - M.R / M.R0)));
+    S.left = Math.round(M.R / M.R0 * 100); S.prog = 1 - (M.R - 2.4 * r) / (M.R0 - 2.4 * r);
+    if (M.R < 2.4 * r && S.endT < 0) finish(0, 0, 0.8); },
+  draw(M) { if (S.endT >= 0) return; ctx.lineWidth = 14; ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, M.R + 7, 0, TAU); ctx.stroke();
+    ctx.lineWidth = 36; ctx.strokeStyle = hsl(S.hue, 100, 60, 0.25); ctx.stroke();
+    for (const b of M.balls) drawBall(b.x, b.y, M.r, b.hue); },
+};
+
+// 5 ─ WALL: rings of bricks; every 15 bricks the ball splits (up to 6 balls)
+MODES.wall = {
+  init(M) { M.bricks = []; const L = [[270, 20], [330, 26], [390, 32]];
+    L.forEach(([R, n], li) => { for (let i = 0; i < n; i++) M.bricks.push({ r0: R, r1: R + 48, a0: i * TAU / n + 0.012, a1: (i + 1) * TAU / n - 0.012, hue: (li * 70 + i * 9) % 360, alive: true }); });
+    M.total = M.bricks.length; M.Rout = 480; const a = S.rnd() * TAU; M.balls = [{ x: 0, y: 0, vx: Math.cos(a) * 1100, vy: Math.sin(a) * 1100, hue: 200 }]; M.broken = 0; S.z = 1; },
+  step(M, dt) { const r = 16;
+    for (const b of M.balls) { const px = b.x, py = b.y; b.x += b.vx * dt; b.y += b.vy * dt;
+      const d = Math.hypot(b.x, b.y);
+      if (d > M.Rout - r) { const nx = b.x / d, ny = b.y / d, vn = b.vx * nx + b.vy * ny; b.x = nx * (M.Rout - r); b.y = ny * (M.Rout - r);
+        if (vn > 0) { b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny; jitter(b, 0.1); b.hue = (b.hue + 47) % 360; ev('p', S.count++ % 5, 0); } }
+      const A = (Math.atan2(b.y, b.x) + TAU) % TAU;
+      for (const k of M.bricks) { if (!k.alive) continue;
+        const da = r / Math.max(d, 1);
+        if (d > k.r0 - r && d < k.r1 + r && A > k.a0 - da && A < k.a1 + da) {
+          k.alive = false; M.broken++; const pd = Math.hypot(px, py), pa = (Math.atan2(py, px) + TAU) % TAU;
+          if (pd <= k.r0 - r + 1 || pd >= k.r1 + r - 1) { const nx = b.x / d, ny = b.y / d, vn = b.vx * nx + b.vy * ny; b.vx -= 2 * vn * nx; b.vy -= 2 * vn * ny; }
+          else { const tx = -b.y / d, ty = b.x / d, vt = b.vx * tx + b.vy * ty; b.vx -= 2 * vt * tx; b.vy -= 2 * vt * ty; }
+          b.x = px; b.y = py; b.hue = (b.hue + 47) % 360; nextHue(); S.pulse = 1;
+          const am = (k.a0 + k.a1) / 2, rm = (k.r0 + k.r1) / 2; burst(Math.cos(am) * rm, Math.sin(am) * rm, 16, 500, 0.5, 8, k.hue); ev('p', 5 + (M.broken % 7), 1);
+          if (M.broken % 11 === 0 && M.balls.length < 7) { const c = { ...b }; [c.vx, c.vy] = rot(b.vx, b.vy, 0.8); M.balls.push(c); ring(b.x, b.y, 200, S.hue, 1); S.pop = 1; ev('k', M.balls.length / 6); }
+          break; } }
+      setSpeed(b, 1100 + 6 * M.broken); }
+    S.left = M.total - M.broken; S.prog = M.broken / M.total;
+    if (M.broken >= M.total && S.endT < 0) finish(0, 0, 0.8); },
+  draw(M) { ctx.lineWidth = 8; ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.beginPath(); ctx.arc(0, 0, M.Rout + 4, 0, TAU); ctx.stroke();
+    for (const k of M.bricks) { if (!k.alive) continue; ctx.fillStyle = hsl(k.hue, 90, 58); ctx.beginPath(); ctx.arc(0, 0, k.r1, k.a0, k.a1); ctx.arc(0, 0, k.r0, k.a1, k.a0, true); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.beginPath(); ctx.arc(0, 0, k.r1, k.a0, k.a1); ctx.arc(0, 0, k.r1 - 10, k.a1, k.a0, true); ctx.closePath(); ctx.fill(); }
+    if (S.endT < 0) for (const b of M.balls) drawBall(b.x, b.y, 16, b.hue); },
+};
+
+// 6 ─ ORBIT: balls launched into orbit draw spirographs, then spiral into the sun
+MODES.orbit = {
+  init(M) { M.GM = 1.7e8; M.balls = []; M.next = 0.2; M.n = 0; M.max = 9; M.sun = 34; S.z = 1; },
+  step(M, dt) {
+    if (M.n < M.max && S.t >= M.next) { const k = M.n, a = k * 2.4 + 0.5, R = 440;
+      const vc = Math.sqrt(M.GM / R) * (0.62 + 0.3 * S.rnd());
+      M.balls.push({ x: Math.cos(a) * R, y: Math.sin(a) * R, vx: -Math.sin(a) * vc, vy: Math.cos(a) * vc, hue: (k * 40 + 190) % 360, trail: [], vr: 0, alive: true });
+      M.n++; M.next += 1.05; ring(Math.cos(a) * R, Math.sin(a) * R, 120, S.hue, 0.6); ev('k', 0.15 + 0.05 * k); }
+    const drag = S.t > M.max * 1.05 + 0.6 ? Math.min(2.2, (S.t - M.max * 1.05 - 0.6) * 1.4) : 0;
+    for (const b of M.balls) { if (!b.alive) continue;
+      for (let s = 0; s < 4; s++) { const h = dt / 4, d = Math.hypot(b.x, b.y) + 1, a = M.GM / (d * d + 400);
+        b.vx -= a * b.x / d * h; b.vy -= a * b.y / d * h; b.vx *= Math.exp(-drag * h); b.vy *= Math.exp(-drag * h); b.x += b.vx * h; b.y += b.vy * h; }
+      const d = Math.hypot(b.x, b.y), vr = (b.x * b.vx + b.y * b.vy) / d;
+      if (b.vr < 0 && vr >= 0) { b.hue = (b.hue + 47) % 360; ev('p', M.balls.indexOf(b) % 10, 1); burst(b.x, b.y, 6, 250, 0.3, 5, b.hue); }
+      b.vr = vr; b.trail.push([b.x, b.y, b.hue]); if (b.trail.length > 160) b.trail.shift();
+      if (d < M.sun + 10) { b.alive = false; M.sun += 5; S.pop = 1; S.shake = 10; burst(0, 0, 50, 700, 0.6, 8, b.hue); ring(0, 0, 220, b.hue, 1); ev('k', 0.5); nextHue(); } }
+    S.left = M.balls.filter(b => b.alive).length; S.prog = Math.min(1, S.t / (M.max * 1.05 + 3.2));
+    if (M.n === M.max && M.balls.every(b => !b.alive) && S.endT < 0) finish(0, 0, 0.8); },
+  draw(M) { const g = ctx.createRadialGradient(0, 0, 0, 0, 0, M.sun * 3); g.addColorStop(0, '#fff'); g.addColorStop(0.3, hsl(S.hue, 100, 70)); g.addColorStop(1, hsl(S.hue, 100, 50, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, M.sun * 3, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+    for (const b of M.balls) { const T = b.trail; ctx.lineWidth = 5; for (let i = 1; i < T.length; i++) { ctx.strokeStyle = hsl(T[i][2], 100, 60, (i / T.length) * 0.8);
+      ctx.beginPath(); ctx.moveTo(T[i - 1][0], T[i - 1][1]); ctx.lineTo(T[i][0], T[i][1]); ctx.stroke(); } }
+    ctx.globalCompositeOperation = 'source-over';
+    if (S.endT < 0) for (const b of M.balls) if (b.alive) drawBall(b.x, b.y, 17, b.hue); },
+};
+
+// 7 ─ PENDULUM WAVE (exact loop): 18 pendulums, pendulum i swings (14+i) times per loop
+MODES.pendulum = { seamless: true, period: 16, hud: false,
+  init(M) { M.n = 18; M.K = 14; M.last = Array(M.n).fill(1); M.hue = Array.from({ length: M.n }, (_, i) => (i * 20 + 180) % 360); S.screen = true;
+    for (let i = 0; i < M.n; i++) ev('n', i, 1); },
+  pos(M, i, t) { const f = (M.K + i) / this.period; return Math.cos(TAU * f * t); },
+  step(M, dt) {
+    for (let i = 0; i < M.n; i++) { const c = this.pos(M, i, S.t), s = Math.sign(c);
+      // touches the side walls (|cos| peaks): colour change + note
+      const f = (M.K + i) / this.period, ph = (S.t * f * 2) % 1, prevPh = ((S.t - dt) * f * 2) % 1;
+      if (ph < prevPh) { M.hue[i] = (M.hue[i] + 47) % 360; const x = 540 + 400 * Math.cos(TAU * f * S.t), y = 300 + i * 78;
+        burst(x, y, 6, 220, 0.3, 5, M.hue[i]); ev('n', i, s > 0 ? 1 : 0); } }
+    if (S.t >= this.period - 1e-6) S.loopDone = true; },
+  draw(M) { ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.beginPath(); ctx.moveTo(540, 250); ctx.lineTo(540, 300 + M.n * 78 - 30); ctx.stroke();
+    for (const x of [540 - 430, 540 + 430]) { ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, 260); ctx.lineTo(x, 300 + M.n * 78 - 40); ctx.stroke(); }
+    const P = [];
+    for (let i = 0; i < M.n; i++) { const x = 540 + 400 * this.pos(M, i, S.t), y = 300 + i * 78; P.push([x, y]);
+      ctx.strokeStyle = hsl(M.hue[i], 100, 70, 0.5); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(540, y); ctx.lineTo(x, y); ctx.stroke(); }
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 3; ctx.beginPath(); P.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke();
+    P.forEach((p, i) => drawBall(p[0], p[1], 24, M.hue[i])); },
+};
+
+// 8 ─ POLYRHYTHM (exact loop): balls on nested half-circles; arc i makes (10+i) round trips per loop
+MODES.poly = { seamless: true, period: 18, hud: false,
+  init(M) { M.n = 14; M.K = 10; M.hue = Array.from({ length: M.n }, (_, i) => (i * 25 + 190) % 360); M.glow = Array(M.n).fill(1); S.screen = true;
+    for (let i = 0; i < M.n; i++) ev('n', i, 2); },
+  ang(M, i, t) { const f = (M.K + i) / this.period, x = (t * f) % 1, tri = x < 0.5 ? 2 * x : 2 - 2 * x; return Math.PI + Math.PI * tri; },
+  step(M, dt) {
+    for (let i = 0; i < M.n; i++) { const f = (M.K + i) / this.period, ph = (S.t * f * 2) % 1, pp = ((S.t - dt) * f * 2) % 1;
+      if (ph < pp) { M.hue[i] = (M.hue[i] + 47) % 360; M.glow[i] = 1; const a = this.ang(M, i, S.t), R = 70 + i * 33;
+        burst(540 + Math.cos(a) * R, 1150 + Math.sin(a) * R, 8, 260, 0.35, 5, M.hue[i]); ev('n', i, 2); } }
+    for (let i = 0; i < M.n; i++) M.glow[i] *= Math.exp(-dt * 6);
+    if (S.t >= this.period - 1e-6) S.loopDone = true; },
+  draw(M) { const cy = 1150;
+    for (const mir of [1, -1]) { ctx.save(); if (mir < 0) { ctx.translate(0, 2 * cy); ctx.scale(1, -1); ctx.globalAlpha = 0.22; }
+      ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.moveTo(540 - 520, cy); ctx.lineTo(540 + 520, cy); ctx.stroke();
+      for (let i = 0; i < M.n; i++) { const R = 70 + i * 33;
+        ctx.lineWidth = 4 + 6 * M.glow[i]; ctx.strokeStyle = hsl(M.hue[i], 100, 60 + 25 * M.glow[i], 0.35 + 0.6 * M.glow[i]);
+        ctx.beginPath(); ctx.arc(540, cy, R, Math.PI, TAU); ctx.stroke(); }
+      for (let i = 0; i < M.n; i++) { const a = this.ang(M, i, S.t), R = 70 + i * 33; drawBall(540 + Math.cos(a) * R, cy + Math.sin(a) * R, 14, M.hue[i]); }
+      ctx.restore(); } },
+};
+
+// 9 ─ GALTON: hundreds of balls build the bell curve, then the board flips
+MODES.galton = {
+  init(M) { M.rows = 13; M.sp = 60; M.top = 480; M.total = 360; M.spawned = 0; M.balls = []; M.bins = Array(M.rows + 1).fill(0); M.landed = 0; M.flip = -1; S.screen = true; M.rate = 30; },
+  step(M, dt) {
+    while (M.spawned < M.total && M.spawned < S.t * M.rate) { const path = []; let k = 0; for (let j = 0; j < M.rows; j++) { const right = S.rnd() < 0.5; path.push(right); if (right) k++; }
+      M.balls.push({ t0: S.t, path, k, hue: (M.spawned * 3 + 190) % 360, done: false, last: -1 }); M.spawned++; }
+    const hop = 0.085;
+    for (const b of M.balls) { if (b.done) continue; const tt = S.t - b.t0, j = Math.floor(tt / hop);
+      if (j > b.last && j <= M.rows && j >= 1) { b.last = j; b.hue = (b.hue + 25) % 360; if (S.rnd() < 0.12) ev('p', j % 10, 0); }
+      const fallT = (M.rows + 1) * hop + 0.25; if (tt > fallT) { b.done = true; b.slot = M.bins[b.k]++; M.landed++; ev('p', b.k % 10, 1);
+        if (M.landed % 60 === 0) { S.pop = 1; ev('k', M.landed / M.total); } } }
+    S.left = M.landed; S.prog = M.landed / M.total;
+    if (M.landed >= M.total && M.flip < 0) M.flip = S.t;
+    if (M.flip >= 0) { S.flipA = Math.min(1, (S.t - M.flip) / 0.9); if (S.t - M.flip > 0.9 && S.endT < 0) finish(540, 1000, 0.6); } },
+  bx(M, k) { return 540 + (k - M.rows / 2) * M.sp; },
+  ballPos(M, b) { const hop = 0.085, tt = S.t - b.t0, j = Math.min(M.rows, Math.floor(tt / hop));
+    let x = 540, y = M.top - 60; for (let q = 0; q < j; q++) x += (b.path[q] ? 0.5 : -0.5) * M.sp;
+    const u = Math.min(1, (tt - j * hop) / hop);
+    if (j < M.rows) { const dx = (b.path[j] ? 0.5 : -0.5) * M.sp; return [x + dx * u, M.top - 60 + j * M.sp * 0.86 + M.sp * 0.86 * u - Math.sin(Math.PI * u) * 26]; }
+    const base = M.top + M.rows * M.sp * 0.86 + 40, floor = 1640, slot = M.bins[b.k], yy = floor - 9 - (b.done ? b.slot : slot) * 0 ;
+    const fu = Math.min(1, (tt - M.rows * hop) / 0.25); const tgt = b.done ? this.stack(M, b) : [this.bx(M, b.k), floor - 20];
+    return [x + (tgt[0] - x) * fu, base + (tgt[1] - base) * fu * fu]; },
+  stack(M, b) { const s = b.slot, col = s % 3, row = Math.floor(s / 3); return [this.bx(M, b.k) + (col - 1) * 18 + (row % 2 ? 9 : 0) * 0, 1640 - 10 - row * 15.5]; },
+  draw(M) { ctx.save(); if (S.flipA) { ctx.translate(540, 1100); ctx.rotate(Math.PI * (1 - Math.cos(Math.PI * S.flipA)) / 2); ctx.translate(-540, -1100); }
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    for (let j = 0; j < M.rows; j++) for (let q = 0; q <= j; q++) { const x = 540 + (q - j / 2) * M.sp, y = M.top + j * M.sp * 0.86; ctx.beginPath(); ctx.arc(x, y, 7, 0, TAU); ctx.fill(); }
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 4;
+    for (let k = 0; k <= M.rows + 1; k++) { const x = this.bx(M, k) - M.sp / 2; ctx.beginPath(); ctx.moveTo(x, 1640); ctx.lineTo(x, 1260); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(this.bx(M, 0) - M.sp / 2, 1642); ctx.lineTo(this.bx(M, M.rows) + M.sp / 2, 1642); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(400, 320); ctx.lineTo(522, M.top - 70); ctx.moveTo(680, 320); ctx.lineTo(558, M.top - 70); ctx.stroke();
+    for (const b of M.balls) { const [x, y] = this.ballPos(M, b); ctx.fillStyle = hsl(b.hue, 100, 60); ctx.beginPath(); ctx.arc(x, y, 8.5, 0, TAU); ctx.fill(); }
+    // reservoir still waiting
+    const waiting = M.total - M.spawned; for (let i = 0; i < Math.min(waiting, 84); i++) { const row = Math.floor(i / 14), col = i % 14;
+      ctx.fillStyle = hsl((i * 7 + 190) % 360, 90, 55); ctx.beginPath(); ctx.arc(540 + (col - 6.5) * 17 * Math.max(0.3, 1 - row * 0.05), 395 - row * 15, 8, 0, TAU); ctx.fill(); }
+    ctx.restore(); },
+};
+
+// 10 ─ CORNER: the DVD question — will it hit the corner? (it does, exactly at the end)
+MODES.corner = {
+  init(M) { M.x0 = 90; M.y0 = 330; M.w = 900; M.h = 1380; M.r = 42; M.m = 11; M.n = 9; M.T = 14; M.Lx = M.w - 2 * M.r; M.Ly = M.h - 2 * M.r;
+    M.vx = M.m * M.Lx / M.T; M.vy = M.n * M.Ly / M.T; M.path = [[M.x0 + M.r, M.y0 + M.r, 200]]; M.bx = 0; M.by = 0; M.x = M.x0 + M.r; M.y = M.y0 + M.r; S.screen = true; M.lastNear = -9; },
+  tri(v, L) { const k = Math.floor(v / L), f = v - k * L; return [k % 2 ? L - f : f, k]; },
+  step(M, dt) { const t = Math.min(S.t, M.T); const [fx, kx] = this.tri(M.vx * t, M.Lx), [fy, ky] = this.tri(M.vy * t, M.Ly);
+    M.x = M.x0 + M.r + fx; M.y = M.y0 + M.r + fy;
+    if (kx !== M.bx || ky !== M.by) { M.bx = kx; M.by = ky; if (t < M.T - 1e-3) { nextHue(); S.pulse = 1; S.count++; M.path.push([M.x, M.y, S.hue]);
+        burst(M.x, M.y, 14, 400, 0.4, 6, S.hue);
+        const dc = Math.min(Math.hypot(fx, fy), Math.hypot(M.Lx - fx, fy), Math.hypot(fx, M.Ly - fy), Math.hypot(M.Lx - fx, M.Ly - fy));
+        if (dc < 170 && S.vt - M.lastNear > 0.6) { M.lastNear = S.vt; slow(0.3, 0.25); ring(M.x, M.y, 160, 0, 0.6); ev('t'); } else ev('p', S.count % 10, 0); } }
+    if (S.t >= M.T && S.endT < 0) { M.path.push([M.x, M.y, S.hue]); finish(M.x, M.y, 0.8); }
+    S.left = S.count; S.prog = Math.min(1, S.t / M.T); },
+  draw(M) { ctx.lineWidth = 10; ctx.strokeStyle = '#fff'; ctx.strokeRect(M.x0 - 5, M.y0 - 5, M.w + 10, M.h + 10);
+    for (const [cx, cy] of [[M.x0, M.y0], [M.x0 + M.w, M.y0], [M.x0, M.y0 + M.h], [M.x0 + M.w, M.y0 + M.h]]) {
+      ctx.fillStyle = `rgba(255,220,80,${0.35 + 0.25 * Math.sin(S.vt * 8)})`; ctx.beginPath(); ctx.arc(cx, cy, 40, 0, TAU); ctx.fill(); }
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; const P = M.path.concat([[M.x, M.y, S.hue]]);
+    for (let i = 1; i < P.length; i++) { ctx.strokeStyle = hsl(P[i][2], 100, 60, 0.55); ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(P[i - 1][0], P[i - 1][1]); ctx.lineTo(P[i][0], P[i][1]); ctx.stroke(); }
+    if (S.endT < 0) drawBall(M.x, M.y, M.r, S.hue); },
+};
+
+// 11 ─ CHAIN: every dot a ball touches explodes into two more balls
+MODES.chain = {
+  init(M) { M.x0 = 90; M.y0 = 380; M.w = 900; M.h = 1300; M.dots = []; const cols = 11, rows = 16;
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) M.dots.push({ x: M.x0 + 60 + i * (M.w - 120) / (cols - 1) + (j % 2 ? 20 : -20), y: M.y0 + 60 + j * (M.h - 260) / (rows - 1), alive: true, hue: (i * 18 + j * 11 + 180) % 360 });
+    M.total = M.dots.length; M.balls = []; M.launch = 0.15; M.popped = 0; S.screen = true; },
+  spawn(M, x, y, a, hue) { M.balls.push({ x, y, vx: Math.cos(a) * 720, vy: Math.sin(a) * 720, life: 3, hue }); },
+  step(M, dt) { if (M.balls.length === 0 && S.endT < 0 && S.t >= M.launch) { this.spawn(M, 540, M.y0 + M.h - 40, -Math.PI / 2 + (S.rnd() - 0.5) * 0.6, S.hue); M.launch = S.t + 0.3; ev('k', 0.2); }
+    const add = [];
+    for (const b of M.balls) { b.x += b.vx * dt; b.y += b.vy * dt; const r = 14;
+      let wall = false;
+      if (b.x < M.x0 + r) { b.x = M.x0 + r; b.vx = Math.abs(b.vx); wall = true; } if (b.x > M.x0 + M.w - r) { b.x = M.x0 + M.w - r; b.vx = -Math.abs(b.vx); wall = true; }
+      if (b.y < M.y0 + r) { b.y = M.y0 + r; b.vy = Math.abs(b.vy); wall = true; } if (b.y > M.y0 + M.h - r) { b.y = M.y0 + M.h - r; b.vy = -Math.abs(b.vy); wall = true; }
+      if (wall) { b.life--; b.hue = (b.hue + 47) % 360; if (b.life <= 0) { b.dead = true; burst(b.x, b.y, 10, 300, 0.3, 5, b.hue); } }
+      for (const d of M.dots) { if (!d.alive) continue; if (Math.hypot(d.x - b.x, d.y - b.y) < r + 16) { d.alive = false; M.popped++; b.hue = (b.hue + 47) % 360; nextHue();
+          burst(d.x, d.y, 14, 450, 0.45, 7, d.hue); ring(d.x, d.y, 70, d.hue, 0.5); ev('p', M.popped % 10, 0); S.pulse = 1;
+          if (M.balls.length + add.length < 40 && S.rnd() < 0.45) for (let q = 0; q < 1; q++) add.push({ x: d.x, y: d.y, a: S.rnd() * TAU, hue: d.hue });
+          if (M.popped % 40 === 0) { S.pop = 1; ev('k', M.popped / M.total); } } } }
+    for (const a of add) this.spawn(M, a.x, a.y, a.a, a.hue);
+    M.balls = M.balls.filter(b => !b.dead);
+    S.left = M.total - M.popped; S.prog = M.popped / M.total;
+    if (M.popped >= M.total && S.endT < 0) finish(540, 1000, 0.8); },
+  draw(M) { ctx.lineWidth = 8; ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.strokeRect(M.x0 - 4, M.y0 - 4, M.w + 8, M.h + 8);
+    for (const d of M.dots) if (d.alive) { ctx.fillStyle = hsl(d.hue, 80, 70, 0.9); ctx.beginPath(); ctx.arc(d.x, d.y, 16, 0, TAU); ctx.fill(); }
+    if (S.endT < 0) for (const b of M.balls) drawBall(b.x, b.y, 14, b.hue, 2); },
+};
+
+// 12 ─ PAINT: a ball paints the canvas; it grows on every bounce until 100%
+MODES.paint = {
+  init(M) { M.n = 36; M.x0 = 90; M.y0 = 550; M.sz = 900 / M.n; M.grid = new Float32Array(M.n * M.n).fill(-1); M.painted = 0;
+    const a = -Math.PI / 4 + (S.rnd() - 0.5) * 0.5; M.b = { x: 540, y: 1000, vx: Math.cos(a) * 1350, vy: Math.sin(a) * 1350, r: 18 }; S.screen = true; },
+  step(M, dt) { const b = M.b; b.x += b.vx * dt; b.y += b.vy * dt; let wall = false;
+    if (b.x < M.x0 + b.r) { b.x = M.x0 + b.r; b.vx = Math.abs(b.vx); wall = true; } if (b.x > M.x0 + 900 - b.r) { b.x = M.x0 + 900 - b.r; b.vx = -Math.abs(b.vx); wall = true; }
+    if (b.y < M.y0 + b.r) { b.y = M.y0 + b.r; b.vy = Math.abs(b.vy); wall = true; } if (b.y > M.y0 + 900 - b.r) { b.y = M.y0 + 900 - b.r; b.vy = -Math.abs(b.vy); wall = true; }
+    if (wall) { jitter(b, 0.14); nextHue(); b.r = Math.min(110, b.r + 4.6); S.pulse = 1; burst(b.x, b.y, 10, 350, 0.35, 6, S.hue); ev('p', S.count++ % 10, 0); }
+    const i0 = Math.max(0, Math.floor((b.x - b.r - M.x0) / M.sz)), i1 = Math.min(M.n - 1, Math.floor((b.x + b.r - M.x0) / M.sz));
+    const j0 = Math.max(0, Math.floor((b.y - b.r - M.y0) / M.sz)), j1 = Math.min(M.n - 1, Math.floor((b.y + b.r - M.y0) / M.sz));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) { const cx = M.x0 + (i + 0.5) * M.sz, cy = M.y0 + (j + 0.5) * M.sz;
+      if (Math.hypot(cx - b.x, cy - b.y) < b.r) { const k = j * M.n + i; if (M.grid[k] < 0) M.painted++; M.grid[k] = S.hue; } }
+    const pct = M.painted / (M.n * M.n); S.left = Math.floor(pct * 100); S.prog = pct;
+    if (pct >= 0.96 && S.endT < 0) { for (let k = 0; k < M.grid.length; k++) if (M.grid[k] < 0) M.grid[k] = S.hue; M.painted = M.n * M.n; S.left = 100; S.prog = 1; finish(b.x, b.y, 0.8); } },
+  draw(M) { for (let j = 0; j < M.n; j++) for (let i = 0; i < M.n; i++) { const h = M.grid[j * M.n + i]; if (h < 0) continue;
+      ctx.fillStyle = hsl(h, 90, 55); ctx.fillRect(M.x0 + i * M.sz, M.y0 + j * M.sz, M.sz + 0.5, M.sz + 0.5); }
+    ctx.lineWidth = 10; ctx.strokeStyle = '#fff'; ctx.strokeRect(M.x0 - 5, M.y0 - 5, 910, 910);
+    if (S.endT < 0) { drawBall(M.b.x, M.b.y, M.b.r, S.hue, 1.6); ctx.lineWidth = 5; ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(M.b.x, M.b.y, M.b.r, 0, TAU); ctx.stroke(); } },
+};
+
+// ------------------------------------------------------------------- engine
+const mode = MODES[MODE];
+function newSim() {
+  EV = [];
+  S = { rnd: mulberry32(SEED * 7919 + MODE.length), t: 0, vt: 0, M: {}, parts: [], rings: [], hue: 200, count: 0, left: 0, prog: 0,
+        flash: mode.seamless ? 0 : 1, shake: 0, pulse: 0, pop: 0, slowT: 0, slowScale: 1, endT: -1, loopDone: false,
+        z: 1, zc: 1, zTarget: null, screen: false, flipA: 0 };
+  mode.init(S.M); S.zc = S.z;
+  if (!mode.seamless) { const cx = S.screen ? 540 : 0, cy = S.screen ? 1000 : 0, k = 1 / S.z;
+    burst(cx, cy, 260, 2000 * k, 0.9, 10 * k, null); ring(cx, cy, 1500 * k, 0, 2 * k); ev('S'); S.shake = 24; }
+  return S;
+}
+function tick(dt) {
+  S.vt += dt; let sc = 1; if (S.slowT > 0) { S.slowT -= dt; sc = S.slowScale; }
+  const sdt = mode.seamless ? dt : dt * sc;
+  S.t += sdt;
+  if (S.endT < 0 || mode.keepStepping) { const n = mode.seamless ? 1 : 6; for (let k = 0; k < n; k++) mode.step(S.M, sdt / n); }
+  for (const p of S.parts) { p.t += sdt; p.x += p.vx * sdt; p.y += p.vy * sdt; p.vx *= Math.exp(-sdt * 2.2); p.vy *= Math.exp(-sdt * 2.2); }
+  S.parts = S.parts.filter(p => p.t < p.life); if (S.parts.length > 4000) S.parts.splice(0, S.parts.length - 4000);
+  for (const r of S.rings) r.t += dt; S.rings = S.rings.filter(r => r.t < 0.6);
+  S.shake *= Math.exp(-dt * 8); S.pulse *= Math.exp(-dt * 10); S.pop *= Math.exp(-dt * 6); S.flash *= Math.exp(-dt * 7);
+  if (S.zTarget != null) S.z += (S.zTarget - S.z) * (1 - Math.exp(-dt * 4));
+  S.zc = S.z;
+  if (S.endT >= 0) { const k = (S.vt - S.endT - 0.32) / 0.3; S.zc = S.z * (1 + 0.35 * Math.min(1, (S.vt - S.endT) / 0.6));
+    if (k > 0) S.flash = Math.max(S.flash, Math.min(1, k)); if (k >= 1) S.loopDone = true; }
+}
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#04030a'; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(W / 2, CY, 0, W / 2, CY, 1150);
+  g.addColorStop(0, hsl(S.hue, 85, 13 + 8 * S.pop)); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const sx = Math.sin(S.vt * 89) * S.shake, sy = Math.cos(S.vt * 71) * S.shake, z = S.zc * (1 + 0.012 * S.pulse + 0.03 * S.pop);
+  if (S.screen) ctx.setTransform(z, 0, 0, z, 540 * (1 - z) + sx, CY * (1 - z) + sy); else ctx.setTransform(z, 0, 0, z, 540 + sx, CY + sy);
+  mode.draw(S.M);
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of S.parts) { const a = 1 - p.t / p.life; ctx.fillStyle = hsl(p.hue, 100, 65, a); ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s); }
+  for (const r of S.rings) { const k = r.t / 0.6; ctx.strokeStyle = r.hue === 0 ? `rgba(255,255,255,${1 - k})` : hsl(r.hue, 100, 70, 1 - k);
+    ctx.lineWidth = 18 * r.w * (1 - k) + 1; ctx.beginPath(); ctx.arc(r.x, r.y, r.R * Math.sqrt(k) + 5, 0, TAU); ctx.stroke(); }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (mode.hud !== false) {
+    const pop = 1 + 0.3 * S.pop; ctx.save(); ctx.translate(W / 2, 200); ctx.scale(pop, pop);
+    ctx.font = `900 120px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const txt = MODE === 'paint' || MODE === 'shrink' ? S.left + '%' : String(S.left);
+    ctx.lineWidth = 16; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(txt, 0, 0); ctx.fillStyle = '#fff'; ctx.fillText(txt, 0, 0); ctx.restore();
+    const bx = 190, bw = W - 380, by = 1790;
+    ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.roundRect(bx, by, bw, 16, 8); ctx.fill();
+    ctx.fillStyle = hsl(S.hue, 100, 62); ctx.beginPath(); ctx.roundRect(bx, by, Math.max(16, bw * Math.min(1, S.prog)), 16, 8); ctx.fill();
+  }
+  if (S.flash > 0.004) { ctx.fillStyle = `rgba(255,255,255,${Math.min(1, S.flash)})`; ctx.fillRect(0, 0, W, H); }
+}
+
+// ------------------------------------------------------------- live sound
+let AC = null;
+function tone(f, d, type = 'triangle', v = 0.12) { const o = AC.createOscillator(), g = AC.createGain(); o.type = type; o.frequency.value = f;
+  g.gain.setValueAtTime(v, AC.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + d); o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + d); }
+const PENT = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24, 27, 29, 31, 34, 36, 39, 41];
+let last = 0, acc = 0;
+function loop(ts) { if (!last) last = ts; acc += Math.min(0.1, (ts - last) / 1000); last = ts;
+  while (acc >= 1 / 60) { tick(1 / 60); if (S.loopDone) newSim(); acc -= 1 / 60; } draw(); requestAnimationFrame(loop); }
+document.getElementById('start').onclick = (e) => { e.target.remove(); AC = new AudioContext();
+  liveSound = (t, a, b) => { if (t === 'p') tone(330 * Math.pow(2, PENT[a % 18] / 12), 0.2); else if (t === 'n') tone(220 * Math.pow(2, PENT[a % 18] / 12), 0.4, 'sine', 0.1);
+    else if (t === 't') tone(2600, 0.3, 'sine', 0.15); else if (t === 'k') tone(70, 0.5, 'sawtooth', 0.25); else if (t === 'F') tone(45, 1.2, 'sawtooth', 0.4); };
+  requestAnimationFrame(loop); };
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') newSim(); });
+newSim(); draw();
+window.__sim = () => S; window.__tick = tick; window.__draw = draw; window.__ev = () => EV; window.__mode = () => mode;
+</script>
+</body>
+</html>
