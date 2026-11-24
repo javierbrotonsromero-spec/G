@@ -1,5 +1,9 @@
 # Descripciones para YouTube Shorts
 
+## 12 loops (loops12/renders/01–12)
+Títulos y descripciones de los 12 en `loops12/DESCRIPCIONES.md`.
+Hashtags fijos para todos los loops: `#shorts #loop #perfectloop #infiniteloop #satisfyingloop #oddlysatisfying`
+
 ## shape_escape_seed7.mp4 (escape_sim/renders)
 **Title (EN):** Can the ball escape all 6 shapes? 😮‍💨 (it never ends)
 
