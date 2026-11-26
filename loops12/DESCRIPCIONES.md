@@ -146,3 +146,52 @@ Every bounce the ball grows bigger… and paints with a new color 🌈
 Then it starts all over again 🔁 Follow for daily loops ✅
 
 #shorts #loop #perfectloop #infiniteloop #satisfyingloop #oddlysatisfying
+
+---
+# Serie "Pendulum Wave" (más dopamínica)
+
+## 13_pwave.mp4
+**Title:** 24 Pendulums Go Crazy… Then Line Up Perfectly 🤯🔁
+
+**Description:**
+24 pendulums, 24 different speeds… waves, snakes, total chaos 🌊🐍
+Watch them snap into 2, 3 and 4 perfect lines 😳 And at the end… all of them line up again 🤯
+A REAL perfect loop — can you find the cut? 👀🔁 Sound ON 🔊 Follow for daily loops ✅
+
+#shorts #loop #perfectloop #infiniteloop #satisfyingloop #oddlysatisfying
+
+---
+
+## 14_spiral.mp4
+**Title:** 24 Balls Spin At Different Speeds… Watch The Spiral 🌀🔁
+
+**Description:**
+Every ball spins a little faster than the one inside it 🌀
+Spirals, stars, crosses… then they ALL line up again 🤯
+Every ball plays a note when it crosses the line 🎶 Sound ON 🔊 Find the cut 👀🔁 Follow for daily loops ✅
+
+#shorts #loop #perfectloop #infiniteloop #satisfyingloop #oddlysatisfying
+
+---
+
+## 15_bounce.mp4
+**Title:** 16 Bouncing Balls Make Perfect Waves 🌊🔁
+
+**Description:**
+16 balls, 16 different bounce speeds… every bounce is a note 🎶
+Waves, chaos, waves again… and they land together at the end 🤯
+A REAL perfect loop 👀🔁 Sound ON 🔊 Follow for daily loops ✅
+
+#shorts #loop #perfectloop #infiniteloop #satisfyingloop #oddlysatisfying
+
+---
+
+## 16_helix.mp4
+**Title:** Two Pendulum Waves Cross Like DNA 🧬🔁
+
+**Description:**
+Two waves swinging in opposite directions… every time they cross, it sparks ✨🎶
+Helix, chaos, perfect rows… and back to the start 🤯
+Can you find the cut? 👀🔁 Sound ON 🔊 Follow for daily loops ✅
+
+#shorts #loop #perfectloop #infiniteloop #satisfyingloop #oddlysatisfying

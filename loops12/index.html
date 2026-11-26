@@ -385,6 +385,117 @@ MODES.paint = {
     if (S.endT < 0) { drawBall(M.b.x, M.b.y, M.b.r, S.hue, 1.6); ctx.lineWidth = 5; ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(M.b.x, M.b.y, M.b.r, 0, TAU); ctx.stroke(); } },
 };
 
+// =================== PENDULUM-WAVE FAMILY (exact loops, T = 18 s = 36 beats at 120 bpm)
+// Alignment moments (T/4, T/3, T/2, 2T/3, 3T/4) are emphasised with an impact,
+// and the whole loop is driven by the beat so the music fits the visuals.
+function waveCommon(M, T, cx, cy) {
+  for (const [ta, s] of [[T / 4, 0.5], [T / 3, 0.65], [T / 2, 1], [2 * T / 3, 0.65], [3 * T / 4, 0.5]]) {
+    if (M.prevT < ta && S.t >= ta) { S.pop = 1; S.flash = Math.max(S.flash, 0.22 * s); S.shake = 10 * s; ring(cx, cy, 950 * s, 0, 1.6); ev('a', s); } }
+  const bl = T / 36, ph = (S.t % bl) / bl; S.pulse = Math.max(S.pulse, Math.exp(-ph * 7) * 0.6);
+  M.prevT = S.t;
+  if (S.t >= T - 1e-6) S.loopDone = true;
+}
+function waveInit(M) { M.prevT = 0; S.flash = 0.3; S.pop = 1; S.screen = true; ev('a', 1); }
+
+// 13 ─ PWAVE: 24-row pendulum wave with glowing walls and trails
+MODES.pwave = { seamless: true, period: 18, hud: false,
+  init(M) { M.n = 24; M.K = 18; M.A = 420; M.hue = Array.from({ length: M.n }, (_, i) => (i * 15 + 180) % 360); M.glow = Array.from({ length: M.n }, () => [0, 0]); waveInit(M); },
+  x(M, i, t) { return 540 + M.A * Math.cos(TAU * (M.K + i) / this.period * t); },
+  y(M, i) { return 290 + i * 57; },
+  step(M, dt) { const T = this.period;
+    for (let i = 0; i < M.n; i++) { const f = (M.K + i) / T, ph = (S.t * f * 2) % 1, pp = ((S.t - dt) * f * 2) % 1;
+      if (ph < pp) { const side = Math.cos(TAU * f * S.t) > 0 ? 1 : 0; M.hue[i] = (M.hue[i] + 47) % 360; M.glow[i][side] = 1;
+        burst(540 + (side ? 1 : -1) * (M.A + 24), this.y(M, i), 10, 380, 0.35, 6, M.hue[i]); ev('n', i, side); } }
+    for (const g of M.glow) { g[0] *= Math.exp(-dt * 7); g[1] *= Math.exp(-dt * 7); }
+    waveCommon(M, T, 540, 1000); },
+  draw(M) { const T = this.period;
+    for (let i = 0; i < M.n; i++) { const y = this.y(M, i);
+      for (const side of [0, 1]) { const g = M.glow[i][side], x = 540 + (side ? 1 : -1) * (M.A + 30);
+        ctx.fillStyle = hsl(M.hue[i], 100, 55 + 35 * g, 0.25 + 0.75 * g); ctx.beginPath(); ctx.roundRect(x - 5 - 6 * g, y - 22, 10 + 12 * g, 44, 6); ctx.fill(); } }
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.beginPath(); ctx.moveTo(540, 250); ctx.lineTo(540, this.y(M, M.n - 1) + 40); ctx.stroke();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let k = 5; k >= 1; k--) for (let i = 0; i < M.n; i++) { const x = this.x(M, i, S.t - k * 0.018);
+      ctx.fillStyle = hsl(M.hue[i], 100, 60, 0.12 * (6 - k) / 5); ctx.beginPath(); ctx.arc(x, this.y(M, i), 20, 0, TAU); ctx.fill(); }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineWidth = 5; ctx.strokeStyle = hsl(S.hue, 100, 75, 0.35); ctx.beginPath();
+    for (let i = 0; i < M.n; i++) { const x = this.x(M, i, S.t), y = this.y(M, i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+    for (let i = 0; i < M.n; i++) { const x = this.x(M, i, S.t), y = this.y(M, i);
+      ctx.strokeStyle = hsl(M.hue[i], 100, 70, 0.4); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(540, y); ctx.lineTo(x, y); ctx.stroke();
+      drawBall(x, y, 21, M.hue[i]); } },
+};
+
+// 14 ─ SPIRAL: 24 balls orbit at (6+i)/T revolutions; spirals form and unwind, all line up at the gate
+MODES.spiral = { seamless: true, period: 18, hud: false,
+  init(M) { M.n = 24; M.K = 6; M.hue = Array.from({ length: M.n }, (_, i) => (i * 15 + 190) % 360); M.gate = 0; waveInit(M); },
+  p(M, i, t) { const a = -Math.PI / 2 + TAU * (M.K + i) / this.period * t, r = 78 + 18.5 * i; return [540 + Math.cos(a) * r, 1000 + Math.sin(a) * r]; },
+  step(M, dt) { const T = this.period;
+    for (let i = 0; i < M.n; i++) { const f = (M.K + i) / T;
+      if (Math.floor(S.t * f) > Math.floor((S.t - dt) * f)) { M.hue[i] = (M.hue[i] + 47) % 360; M.gate = 1; const [x, y] = this.p(M, i, S.t);
+        burst(x, y, 10, 360, 0.35, 6, M.hue[i]); ev('n', i, 1); } }
+    M.gate *= Math.exp(-dt * 5); waveCommon(M, T, 540, 1000); },
+  draw(M) {
+    for (let i = 0; i < M.n; i++) { ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(540, 1000, 78 + 18.5 * i, 0, TAU); ctx.stroke(); }
+    ctx.lineWidth = 6 + 10 * M.gate; ctx.strokeStyle = `rgba(255,255,255,${0.25 + 0.6 * M.gate})`; ctx.beginPath(); ctx.moveTo(540, 1000 - 60); ctx.lineTo(540, 1000 - 540); ctx.stroke();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < M.n; i++) { ctx.lineWidth = 7; ctx.lineCap = 'round'; const a0 = -Math.PI / 2 + TAU * (M.K + i) / this.period * S.t, r = 78 + 18.5 * i;
+      const g = ctx.createLinearGradient(0, 0, 1, 1); ctx.strokeStyle = hsl(M.hue[i], 100, 60, 0.35);
+      ctx.beginPath(); ctx.arc(540, 1000, r, a0 - 0.5 - 0.02 * i, a0); ctx.stroke(); }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineWidth = 4; ctx.strokeStyle = hsl(S.hue, 100, 75, 0.4); ctx.beginPath();
+    for (let i = 0; i < M.n; i++) { const [x, y] = this.p(M, i, S.t); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+    for (let i = 0; i < M.n; i++) { const [x, y] = this.p(M, i, S.t); drawBall(x, y, 11 + 0.25 * i, M.hue[i]); }
+    drawBall(540, 1000, 26, S.hue, 3); },
+};
+
+// 15 ─ BOUNCE: 16 balls bouncing on the floor, ball i bounces (9+i) times per loop
+MODES.bounce = { seamless: true, period: 18, hud: false,
+  init(M) { M.n = 16; M.K = 9; M.g = 2500; M.floor = 1640; M.hue = Array.from({ length: M.n }, (_, i) => (i * 22 + 190) % 360); M.glow = Array(M.n).fill(1); M.sq = Array(M.n).fill(0); waveInit(M); },
+  x(M, i) { return 540 + (i - (M.n - 1) / 2) * 62; },
+  y(M, i, t) { const P = this.period / (M.K + i), u = ((t / P) % 1 + 1) % 1, h = M.g * P * P / 8; return M.floor - 25 - h * 4 * u * (1 - u); },
+  step(M, dt) { const T = this.period;
+    for (let i = 0; i < M.n; i++) { const P = T / (M.K + i);
+      if (Math.floor(S.t / P) > Math.floor((S.t - dt) / P)) { M.hue[i] = (M.hue[i] + 47) % 360; M.glow[i] = 1; M.sq[i] = 1;
+        burst(this.x(M, i), M.floor, 12, 420, 0.4, 6, M.hue[i]); ev('n', i, 3); } }
+    for (let i = 0; i < M.n; i++) { M.glow[i] *= Math.exp(-dt * 6); M.sq[i] *= Math.exp(-dt * 14); }
+    waveCommon(M, T, 540, M.floor); },
+  draw(M) {
+    for (let i = 0; i < M.n; i++) { const x = this.x(M, i), g = M.glow[i];
+      ctx.fillStyle = 'rgba(255,255,255,0.04)'; ctx.fillRect(x - 26, 260, 52, M.floor - 260);
+      ctx.fillStyle = hsl(M.hue[i], 100, 55 + 35 * g, 0.3 + 0.7 * g); ctx.fillRect(x - 28, M.floor, 56, 10 + 14 * g); }
+    ctx.globalCompositeOperation = 'lighter';
+    for (let k = 6; k >= 1; k--) for (let i = 0; i < M.n; i++) { ctx.fillStyle = hsl(M.hue[i], 100, 60, 0.1 * (7 - k) / 6);
+      ctx.beginPath(); ctx.arc(this.x(M, i), this.y(M, i, S.t - k * 0.02), 22, 0, TAU); ctx.fill(); }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineWidth = 5; ctx.strokeStyle = hsl(S.hue, 100, 75, 0.35); ctx.beginPath();
+    for (let i = 0; i < M.n; i++) { const x = this.x(M, i), y = this.y(M, i, S.t); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+    for (let i = 0; i < M.n; i++) { const x = this.x(M, i), y = this.y(M, i, S.t), q = M.sq[i];
+      ctx.save(); ctx.translate(x, y + 25 * 0.3 * q); ctx.scale(1 + 0.35 * q, 1 - 0.3 * q); drawBall(0, 0, 25, M.hue[i]); ctx.restore(); } },
+};
+
+// 16 ─ HELIX: two mirrored pendulum waves cross each other like a double helix
+MODES.helix = { seamless: true, period: 18, hud: false,
+  init(M) { M.n = 20; M.K = 14; M.A = 400; M.ha = Array.from({ length: M.n }, (_, i) => (i * 8 + 330) % 360); M.hb = Array.from({ length: M.n }, (_, i) => (i * 8 + 170) % 360); M.spark = Array(M.n).fill(0); waveInit(M); },
+  xa(M, i, t) { return 540 + M.A * Math.cos(TAU * (M.K + i) / this.period * t); },
+  xb(M, i, t) { return 540 - M.A * Math.cos(TAU * (M.K + M.n - 1 - i) / this.period * t); },
+  y(M, i) { return 300 + i * 68; },
+  step(M, dt) { const T = this.period;
+    for (let i = 0; i < M.n; i++) { const d0 = this.xa(M, i, S.t - dt) - this.xb(M, i, S.t - dt), d1 = this.xa(M, i, S.t) - this.xb(M, i, S.t);
+      if (d0 * d1 < 0) { M.ha[i] = (M.ha[i] + 47) % 360; M.hb[i] = (M.hb[i] + 47) % 360; M.spark[i] = 1; const x = this.xa(M, i, S.t);
+        burst(x, this.y(M, i), 14, 450, 0.4, 6, null); ev('n', i, 4); } }
+    for (let i = 0; i < M.n; i++) M.spark[i] *= Math.exp(-dt * 6);
+    waveCommon(M, T, 540, 1000); },
+  draw(M) {
+    for (let i = 0; i < M.n; i++) { const y = this.y(M, i), a = this.xa(M, i, S.t), b = this.xb(M, i, S.t);
+      ctx.lineWidth = 4 + 8 * M.spark[i]; ctx.strokeStyle = `rgba(255,255,255,${0.15 + 0.7 * M.spark[i]})`; ctx.beginPath(); ctx.moveTo(a, y); ctx.lineTo(b, y); ctx.stroke(); }
+    for (const [fx, hs] of [[(i, t) => this.xa(M, i, t), M.ha], [(i, t) => this.xb(M, i, t), M.hb]]) {
+      ctx.lineWidth = 6; ctx.strokeStyle = hsl(hs[0], 100, 70, 0.35); ctx.beginPath();
+      for (let i = 0; i < M.n; i++) { const x = fx(i, S.t), y = this.y(M, i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let k = 4; k >= 1; k--) for (let i = 0; i < M.n; i++) { ctx.fillStyle = hsl(hs[i], 100, 60, 0.12 * (5 - k) / 4); ctx.beginPath(); ctx.arc(fx(i, S.t - k * 0.02), this.y(M, i), 20, 0, TAU); ctx.fill(); }
+      ctx.globalCompositeOperation = 'source-over';
+      for (let i = 0; i < M.n; i++) drawBall(fx(i, S.t), this.y(M, i), 20, hs[i]); } },
+};
+
 // ------------------------------------------------------------------- engine
 const mode = MODES[MODE];
 function newSim() {
