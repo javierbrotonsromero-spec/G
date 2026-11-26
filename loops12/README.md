@@ -21,3 +21,15 @@ Corte del loop: los modos con final terminan en destello blanco y empiezan en es
 
 Renderizar todos: `batch_l12.sh` (usa `render_l12.js` + `synth_l12.py`). Buscar semillas: `node l12_search.js <modo> <n> <desde>`.
 Títulos y descripciones: `DESCRIPCIONES.md` (hashtags fijos para todos los loops).
+
+## Serie Pendulum Wave (13–16), loops exactos de 18 s
+Duran 36 tiempos a 120 bpm, así que a ¼, ⅓, ½, ⅔ y ¾ del loop las bolas se alinean en filas justo sobre el ritmo; en esos momentos hay golpe, destello y onda. Hay una subida de tensión hacia la mitad y hacia el final, y la realineación final coincide con el arranque del loop.
+
+| # | modo | idea |
+|---|------|------|
+| 13 | pwave | 24 péndulos con paredes que se iluminan, estelas y una nota por choque |
+| 14 | spiral | 24 bolas girando a distinta velocidad: espirales, estrellas y alineación en la línea |
+| 15 | bounce | 16 bolas botando, la bola i bota (9+i) veces por loop |
+| 16 | helix | dos ondas en sentidos opuestos que se cruzan como ADN, con chispa en cada cruce |
+
+Renderizar: `batch_wave.sh`.
